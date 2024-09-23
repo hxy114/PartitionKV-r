@@ -488,7 +488,9 @@ class DBImpl : public DB {
 
   ColumnFamilyHandle* DefaultColumnFamily() const override;
 
+  size_t DefaultColumnFamilyQueueSize() const;
   ColumnFamilyHandle* PersistentStatsColumnFamily() const;
+
 
   Status Close() override;
 
@@ -1364,7 +1366,7 @@ class DBImpl : public DB {
   // `mutex_` can be a hot lock in some workloads, so it deserves dedicated
   // cachelines.
   mutable CacheAlignedInstrumentedMutex mutex_;
-
+  mutable InstrumentedCondVar background_work_finished_signal_L0_;
   ColumnFamilyHandleImpl* default_cf_handle_;
   InternalStats* default_cf_internal_stats_;
 
@@ -1672,6 +1674,8 @@ class DBImpl : public DB {
   friend struct SuperVersion;
   friend class CompactedDBImpl;
   friend class DBImplFollower;
+  friend class PartitionNode;
+  friend class PartitionIndexLayer;
 #ifndef NDEBUG
   friend class DBTest_ConcurrentFlushWAL_Test;
   friend class DBTest_MixedSlowdownOptionsStop_Test;
@@ -1875,6 +1879,7 @@ class DBImpl : public DB {
   struct PrepickedCompaction {
     // background compaction takes ownership of `compaction`.
     Compaction* compaction;
+    CompactionL0 * compactionl0;
     // caller retains ownership of `manual_compaction_state` as it is reused
     // across background compactions.
     ManualCompactionState* manual_compaction_state;  // nullptr if non-manual
@@ -2223,14 +2228,18 @@ class DBImpl : public DB {
   void SchedulePendingPurge(std::string fname, std::string dir_to_sync,
                             FileType type, uint64_t number, int job_id);
   static void BGWorkCompaction(void* arg);
+  static void BGWorkCompactionL0(void* arg);
   // Runs a pre-chosen universal compaction involving bottom level in a
   // separate, bottom-pri thread pool.
   static void BGWorkBottomCompaction(void* arg);
   static void BGWorkFlush(void* arg);
   static void BGWorkPurge(void* arg);
+  static void UnscheduleCompactionL0Callback(void* arg);
   static void UnscheduleCompactionCallback(void* arg);
   static void UnscheduleFlushCallback(void* arg);
   void BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
+                                Env::Priority thread_pri);
+  void BackgroundCallCompactionL0(PrepickedCompaction* prepicked_compaction,
                                 Env::Priority thread_pri);
   void BackgroundCallFlush(Env::Priority thread_pri);
   void BackgroundCallPurge();
@@ -2238,6 +2247,10 @@ class DBImpl : public DB {
                               LogBuffer* log_buffer,
                               PrepickedCompaction* prepicked_compaction,
                               Env::Priority thread_pri);
+  Status BackgroundCompactionL0(bool* madeProgress, JobContext* job_context,
+                              LogBuffer* log_buffer,
+                              PrepickedCompaction* prepicked_compaction,
+                              Env::Priority thread_pri,bool & run);
   Status BackgroundFlush(bool* madeProgress, JobContext* job_context,
                          LogBuffer* log_buffer, FlushReason* reason,
                          bool* flush_rescheduled_to_retain_udt,
@@ -2924,6 +2937,8 @@ class DBImpl : public DB {
   // The number of LockWAL called without matching UnlockWAL call.
   // See also lock_wal_write_token_
   uint32_t lock_wal_count_;
+  bool use_partition_;
+  //port::CondVar background_work_finished_signal_L0_;
 };
 
 class GetWithTimestampReadCallback : public ReadCallback {

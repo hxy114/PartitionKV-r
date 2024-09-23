@@ -98,7 +98,7 @@ class WriteBufferManager final {
   // Below functions should be called by RocksDB internally.
 
   // Should only be called from write thread
-  bool ShouldFlush() const {
+  bool ShouldFlush() const {//判断memtable内存使用量
     if (enabled()) {
       if (mutable_memtable_memory_usage() >
           mutable_limit_.load(std::memory_order_relaxed)) {

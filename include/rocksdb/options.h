@@ -291,8 +291,8 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Default: 256MB.
   //
   // Dynamically changeable through SetOptions() API
-  uint64_t max_bytes_for_level_base = 256 * 1048576;
-
+  //uint64_t max_bytes_for_level_base = 256 * 1048576;
+  uint64_t max_bytes_for_level_base = 6ull * 1048576.0*1024.0;
   // Deprecated.
   uint64_t snap_refresh_nanos = 0;
 
@@ -1591,6 +1591,7 @@ struct DBOptions {
   // functions.
   Temperature wal_write_temperature = Temperature::kUnknown;
   // End EXPERIMENTAL
+  bool use_partition_ = true;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)
@@ -1929,7 +1930,7 @@ struct WriteOptions {
   // you disable write-ahead logs, you must create backups with
   // flush_before_backup=true to avoid losing unflushed memtable data.
   // Default: false
-  bool disableWAL = false;
+  bool disableWAL = true;
 
   // If true and if user is trying to write to column families that don't exist
   // (they were dropped),  ignore the write (don't return an error). If there

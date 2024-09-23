@@ -438,7 +438,7 @@ void WriteThread::JoinBatchGroup(Writer* w) {
 }
 
 size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
-                                            WriteGroup* write_group) {
+                                            WriteGroup* write_group) {//构造writegroup
   assert(leader->link_older == nullptr);
   assert(leader->batch != nullptr);
   assert(write_group != nullptr);

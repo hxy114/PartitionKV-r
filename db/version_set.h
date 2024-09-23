@@ -259,6 +259,14 @@ class VersionStorageInfo {
   // Return idx'th highest score
   double CompactionScore(int idx) const { return compaction_score_[idx]; }
 
+  size_t GetOverlappingSize(int level,
+                            const InternalKey* begin,
+                            const InternalKey* end);
+  void GetOverlappingInputs(
+          int level,
+          const std::string& begin,  // nullptr means before all keys
+          const std::string& end,    // nullptr means after all keys
+          std::vector<FileMetaData*>* inputs);
   void GetOverlappingInputs(
       int level, const InternalKey* begin,  // nullptr means before all keys
       const InternalKey* end,               // nullptr means after all keys
@@ -1474,6 +1482,17 @@ class VersionSet {
       const std::optional<const Slice>& start,
       const std::optional<const Slice>& end);
 
+  // Create an iterator that reads over the compaction inputs for "*c".
+  // The caller should delete the iterator when no longer needed.
+  // @param read_options Must outlive the returned iterator.
+  // @param start, end indicates compaction range
+  InternalIterator* MakeInputIteratorL0(
+          const ReadOptions& read_options, const CompactionL0* c,
+          RangeDelAggregator* range_del_agg,
+          const FileOptions& file_options_compactions,
+          const std::optional<const Slice>& start,
+          const std::optional<const Slice>& end,Arena *arena);
+
   // Add all files listed in any live version to *live_table_files and
   // *live_blob_files. Note that these lists may contain duplicates.
   void AddLiveFiles(std::vector<uint64_t>* live_table_files,
@@ -1582,6 +1601,8 @@ class VersionSet {
   friend class DumpManifestHandler;
   friend class DBImpl;
   friend class DBImplReadOnly;
+  friend class PartitionIndexLayer;
+  friend class PartitionNode;
 
   struct LogReporter : public log::Reader::Reporter {
     Status* status;

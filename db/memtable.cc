@@ -26,6 +26,7 @@
 #include "logging/logging.h"
 #include "memory/arena.h"
 #include "memory/memory_usage.h"
+#include "memtable/partition_node.h"
 #include "monitoring/perf_context_imp.h"
 #include "monitoring/statistics_impl.h"
 #include "port/lang.h"
@@ -77,6 +78,91 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
                    const MutableCFOptions& mutable_cf_options,
                    WriteBufferManager* write_buffer_manager,
                    SequenceNumber latest_seq, uint32_t column_family_id)
+        : comparator_(cmp),
+          moptions_(ioptions, mutable_cf_options),
+          refs_(0),
+          kArenaBlockSize(Arena::OptimizeBlockSize(moptions_.arena_block_size)),
+          mem_tracker_(write_buffer_manager),
+          arena_(moptions_.arena_block_size,
+                 (write_buffer_manager != nullptr &&
+                  (write_buffer_manager->enabled() ||
+                   write_buffer_manager->cost_to_cache()))
+                 ? &mem_tracker_
+                 : nullptr,
+                 mutable_cf_options.memtable_huge_page_size),
+          table_(ioptions.memtable_factory->CreateMemTableRep(
+                  comparator_, &arena_, mutable_cf_options.prefix_extractor.get(),
+                  ioptions.logger, column_family_id)),
+          range_del_table_(SkipListFactory().CreateMemTableRep(
+                  comparator_, &arena_, nullptr /* transform */, ioptions.logger,
+                  column_family_id)),
+          is_range_del_table_empty_(true),
+          data_size_(0),
+          num_entries_(0),
+          num_deletes_(0),
+          num_range_deletes_(0),
+          write_buffer_size_(mutable_cf_options.write_buffer_size),
+          flush_in_progress_(false),
+          flush_completed_(false),
+          file_number_(0),
+          first_seqno_(0),
+          earliest_seqno_(latest_seq),
+          creation_seq_(latest_seq),
+          mem_next_logfile_number_(0),
+          min_prep_log_referenced_(0),
+          locks_(moptions_.inplace_update_support
+                 ? moptions_.inplace_update_num_locks
+                 : 0),
+          prefix_extractor_(mutable_cf_options.prefix_extractor.get()),
+          flush_state_(FLUSH_NOT_REQUESTED),
+          clock_(ioptions.clock),
+          insert_with_hint_prefix_extractor_(
+                  ioptions.memtable_insert_with_hint_prefix_extractor.get()),
+          oldest_key_time_(std::numeric_limits<uint64_t>::max()),
+          atomic_flush_seqno_(kMaxSequenceNumber),
+          approximate_memory_usage_(0),
+          memtable_max_range_deletions_(
+                  mutable_cf_options.memtable_max_range_deletions) {
+  UpdateFlushState();
+  // something went wrong if we need to flush before inserting anything
+  assert(!ShouldScheduleFlush());
+
+  // use bloom_filter_ for both whole key and prefix bloom filter
+  if ((prefix_extractor_ || moptions_.memtable_whole_key_filtering) &&
+      moptions_.memtable_prefix_bloom_bits > 0) {
+    bloom_filter_.reset(
+            new DynamicBloom(&arena_, moptions_.memtable_prefix_bloom_bits,
+                             6 /* hard coded 6 probes */,
+                             moptions_.memtable_huge_page_size, ioptions.logger));
+  }
+  // Initialize cached_range_tombstone_ here since it could
+  // be read before it is constructed in MemTable::Add(), which could also lead
+  // to a data race on the global mutex table backing atomic shared_ptr.
+  auto new_cache = std::make_shared<FragmentedRangeTombstoneListCache>();
+  size_t size = cached_range_tombstone_.Size();
+  for (size_t i = 0; i < size; ++i) {
+    std::shared_ptr<FragmentedRangeTombstoneListCache>* local_cache_ref_ptr =
+            cached_range_tombstone_.AccessAtCore(i);
+    auto new_local_cache_ref = std::make_shared<
+            const std::shared_ptr<FragmentedRangeTombstoneListCache>>(new_cache);
+    std::atomic_store_explicit(
+            local_cache_ref_ptr,
+            std::shared_ptr<FragmentedRangeTombstoneListCache>(new_local_cache_ref,
+                                                               new_cache.get()),
+            std::memory_order_relaxed);
+  }
+  const Comparator* ucmp = cmp.user_comparator();
+  assert(ucmp);
+  ts_sz_ = ucmp->timestamp_size();
+  persist_user_defined_timestamps_ = ioptions.persist_user_defined_timestamps;
+}
+
+
+MemTable::MemTable(const InternalKeyComparator& cmp,
+                   const ImmutableOptions& ioptions,
+                   const MutableCFOptions& mutable_cf_options,
+                   WriteBufferManager* write_buffer_manager,
+                   SequenceNumber latest_seq, uint32_t column_family_id, PartitionNode *partitionNode,PmLogHead *pmLogHead)
     : comparator_(cmp),
       moptions_(ioptions, mutable_cf_options),
       refs_(0),
@@ -89,11 +175,18 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
                  ? &mem_tracker_
                  : nullptr,
              mutable_cf_options.memtable_huge_page_size),
+      pmLogHead_(pmLogHead),
+      nvmArena_(pmLogHead_,
+             (write_buffer_manager != nullptr &&
+              (write_buffer_manager->enabled() ||
+               write_buffer_manager->cost_to_cache()))
+             ? &mem_tracker_
+             : nullptr),
       table_(ioptions.memtable_factory->CreateMemTableRep(
-          comparator_, &arena_, mutable_cf_options.prefix_extractor.get(),
+          comparator_, &arena_, &nvmArena_,mutable_cf_options.prefix_extractor.get(),
           ioptions.logger, column_family_id)),
       range_del_table_(SkipListFactory().CreateMemTableRep(
-          comparator_, &arena_, nullptr /* transform */, ioptions.logger,
+          comparator_, &arena_, &nvmArena_,nullptr /* transform */, ioptions.logger,
           column_family_id)),
       is_range_del_table_empty_(true),
       data_size_(0),
@@ -121,7 +214,9 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
       atomic_flush_seqno_(kMaxSequenceNumber),
       approximate_memory_usage_(0),
       memtable_max_range_deletions_(
-          mutable_cf_options.memtable_max_range_deletions) {
+          mutable_cf_options.memtable_max_range_deletions) ,
+      role_(pmtable),status_(IN_RECEVIE),left_father_(partitionNode),right_father_(nullptr),next_(nullptr){
+  init(partitionNode);
   UpdateFlushState();
   // something went wrong if we need to flush before inserting anything
   assert(!ShouldScheduleFlush());
@@ -155,11 +250,81 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
   ts_sz_ = ucmp->timestamp_size();
   persist_user_defined_timestamps_ = ioptions.persist_user_defined_timestamps;
 }
-
+void MemTable::init(PartitionNode *partitionNode){
+  pmLogHead_->magic_number=PM_LOG_MAGIC;
+  pmLogHead_->start_key_size=partitionNode->start_key.size();
+  pmem_memcpy_nodrain(&(pmLogHead_->start_key),partitionNode->start_key.c_str(),partitionNode->start_key.size());
+  pmLogHead_->end_key_size=partitionNode->end_key.size();
+  pmem_memcpy_nodrain(&(pmLogHead_->end_key),partitionNode->end_key.c_str(),partitionNode->end_key.size());
+  pmLogHead_->used_size=PM_LOG_HEAD_SIZE;
+  pmLogHead_->file_size=PM_LOG_SIZE;
+  pmLogHead_->next=0;
+  pmem_persist(&pmLogHead_,PM_LOG_HEAD_SIZE);
+}
 MemTable::~MemTable() {
   mem_tracker_.FreeMem();
+  pmem_persist(pmLogHead_,sizeof(pmLogHead_));
+  nvmManager->free_pm_log(pmLogHead_);
   assert(refs_ == 0);
 }
+
+void MemTable::FreePmtable(){
+  pmLogHead_->magic_number= NVM_INVALID;
+  //pmem_persist(pmLogHead_,sizeof(pmLogHead_));
+}
+std::string &MemTable::GetMinKey(){
+  return min_key_;
+}
+std::string &MemTable::GetMaxKey(){
+  return max_key_;
+}
+void MemTable::SetRole(Role role){
+  role_=role;
+  auto t=next_;
+  while(t!= nullptr){
+    t->role_=role;
+    t=t->next_;
+  }
+}
+void MemTable::SetLeftFather(PartitionNode *left_father){
+  left_father_=left_father;
+  auto t=next_;
+  while(t!= nullptr){
+    t->left_father_=left_father;
+    t=t->next_;
+  }
+
+}
+void MemTable::SetRightFather(PartitionNode *right_father){
+  right_father_=right_father;
+  auto t=next_;
+  while(t!= nullptr){
+    t->right_father_=right_father;
+    t=t->next_;
+  }
+
+}
+MemTable::Role MemTable::GetRole(){
+  return role_;
+}
+void MemTable::SetPmTableStatus(PmTable_Status pmTableStatus){
+  status_=pmTableStatus;
+}
+MemTable::PmTable_Status MemTable::GetPmTableStatus(){
+  return status_;
+}
+PartitionNode * MemTable::GetLeftFather(){
+  return left_father_;
+}
+PartitionNode * MemTable::GetRightFather(){
+  return  right_father_;
+}
+void MemTable::SetNext(MemTable *pmTable){
+  next_=pmTable;
+  pmLogHead_->next=(uint64_t)pmTable->pmLogHead_-(uint64_t)nvmManager->get_base();
+}
+size_t MemTable::ApproximateNvmMemoryUsage() { return nvmArena_.MemoryUsage(); }
+
 
 size_t MemTable::ApproximateMemoryUsage() {
   autovector<size_t> usages = {
@@ -329,6 +494,20 @@ int MemTable::KeyComparator::operator()(const char* prefix_len_key1,
   // Internal keys are encoded as length-prefixed strings.
   Slice k1 = GetLengthPrefixedSlice(prefix_len_key1);
   Slice k2 = GetLengthPrefixedSlice(prefix_len_key2);
+  /*ParsedInternalKey r1;
+  ParseInternalKey(k1,&r1,false);
+  printf("k1 size:%zu \n",k1.size());
+  std::cout<<"k1 key:"<<r1.user_key.ToString()<<"size"<<r1.user_key.ToString().size()<<std::endl;
+  printf("k1 key:%s \n",r1.user_key.ToString().c_str());
+  printf("k1 seq:%lu \n",r1.sequence);
+  printf("k1 type:%d \n",r1.type);
+  ParsedInternalKey r2;
+  ParseInternalKey(k2,&r2,false);
+  printf("k2 size:%zu \n",k2.size());
+  std::cout<<"k2 key:"<<r2.user_key.ToString()<<"size"<<r2.user_key.ToString().size()<<std::endl;
+  printf("k2 key:%s \n",r2.user_key.ToString().c_str());
+  printf("k2 seq:%lu \n",r2.sequence);
+  printf("k2 type:%d \n",r2.type);*/
   return comparator.CompareKeySeq(k1, k2);
 }
 
@@ -601,6 +780,13 @@ InternalIterator* MemTable::NewIterator(
       MemTableIterator(*this, read_options, seqno_to_time_mapping, arena);
 }
 
+InternalIterator* MemTable::NewIterator(
+    const ReadOptions& read_options,
+    UnownedPtr<const SeqnoToTimeMapping> seqno_to_time_mapping) {
+  return new
+      MemTableIterator(*this, read_options, seqno_to_time_mapping, nullptr);
+}
+
 FragmentedRangeTombstoneIterator* MemTable::NewRangeTombstoneIterator(
     const ReadOptions& read_options, SequenceNumber read_seq,
     bool immutable_memtable) {
@@ -754,24 +940,36 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
                      const Slice& value,
                      const ProtectionInfoKVOS64* kv_prot_info,
                      bool allow_concurrent,
-                     MemTablePostProcessInfo* post_process_info, void** hint) {
+                     MemTablePostProcessInfo* post_process_info, void** hint) {//disable hint,disable post_process_info
   // Format of an entry is concatenation of:
   //  key_size     : varint32 of internal_key.size()
   //  key bytes    : char[internal_key.size()]
   //  value_size   : varint32 of value.size()
   //  value bytes  : char[value.size()]
   //  checksum     : char[moptions_.protection_bytes_per_key]
+  std::cout<<"insert key:"<<key.ToString()<<std::endl;
+  //std::cout<<"insert value:"<<value.ToString()<<std::endl;
+  std::cout<<"insert seq:"<<s<<std::endl;
+  std::cout<<"insert type:"<<type<<std::endl;
   uint32_t key_size = static_cast<uint32_t>(key.size());
   uint32_t val_size = static_cast<uint32_t>(value.size());
   uint32_t internal_key_size = key_size + 8;
   const uint32_t encoded_len = VarintLength(internal_key_size) +
                                internal_key_size + VarintLength(val_size) +
                                val_size + moptions_.protection_bytes_per_key;
+  char* buf1 = nullptr;
   char* buf = nullptr;
+  if (encoded_len+ ApproximateNvmMemoryUsage() > PM_LOG_SIZE) {
+    return Status::NoNVMSpace();
+  }
   std::unique_ptr<MemTableRep>& table =
       type == kTypeRangeDeletion ? range_del_table_ : table_;
-  KeyHandle handle = table->Allocate(encoded_len, &buf);
-
+  KeyHandle handle = table->Allocate(encoded_len, &buf1);
+  //printf("buf1:%p \n", buf1);
+  //uint64_t a = reinterpret_cast<uint64_t >(buf1);
+  buf =  reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));
+  printf("buf1:%p, handle:%p \n",buf1,handle);
+  printf("buf:%p \n", buf);
   char* p = EncodeVarint32(buf, internal_key_size);
   memcpy(p, key.data(), key_size);
   Slice key_slice(p, key_size);
@@ -801,13 +999,19 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     // Extract prefix for insert with hint. Hints are for point key table
     // (`table_`) only, not `range_del_table_`.
     if (table == table_ && insert_with_hint_prefix_extractor_ != nullptr &&
-        insert_with_hint_prefix_extractor_->InDomain(key_slice)) {
+        insert_with_hint_prefix_extractor_->InDomain(key_slice)) {//disable
       Slice prefix = insert_with_hint_prefix_extractor_->Transform(key_slice);
       bool res = table->InsertKeyWithHint(handle, &insert_hints_[prefix]);
       if (UNLIKELY(!res)) {
         return Status::TryAgain("key+seq exists");
       }
     } else {
+      if(min_key_.empty()||comparator_.comparator.user_comparator()->Compare(min_key_,key)>0){
+        min_key_=key.ToString();
+      }
+      if(max_key_.empty()||comparator_.comparator.user_comparator()->Compare(max_key_,key)<0){
+        max_key_=key.ToString();
+      }
       bool res = table->InsertKey(handle);
       if (UNLIKELY(!res)) {
         return Status::TryAgain("key+seq exists");
@@ -919,7 +1123,13 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     is_range_del_table_empty_.store(false, std::memory_order_relaxed);
   }
   UpdateOldestKeyTime();
-
+  const char*  k=reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));;
+  ParsedInternalKey result;
+  ParseInternalKey({k + VarintLength(internal_key_size),internal_key_size},&result,false);
+  //std::cout<<"right"<<(k==key)<<std::endl;
+  std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
+  std::cout<<"inserted seq:"<<result.sequence<<std::endl;
+  std::cout<<"inserted type:"<<result.type<<std::endl;
   TEST_SYNC_POINT_CALLBACK("MemTable::Add:BeforeReturn:Encoded", &encoded);
   return Status::OK();
 }
@@ -1739,6 +1949,49 @@ const Slice& MemTable::GetNewestUDT() const {
   // in Memtable only feature.
   assert(ts_sz_ > 0 && !persist_user_defined_timestamps_);
   return newest_udt_;
+}
+
+PmtableQueue::ListNode::ListNode(MemTable *pmTable) {
+  pmTable_=pmTable;
+  pre= nullptr;
+  next= nullptr;
+}
+PmtableQueue::PmtableQueue(){
+  head_=new ListNode(nullptr);
+  head_->next=head_;
+  head_->pre=head_;
+
+}
+PmtableQueue::~PmtableQueue() {
+  delete head_;
+}
+PmtableQueue::ListNode * PmtableQueue::GetHead(){
+  return head_;
+}
+
+void PmtableQueue::InsertPmtable(MemTable *pmtable){
+  if(mp_.count(pmtable)==0){
+    ListNode *node=new ListNode(pmtable),*pre=head_->pre;
+    pre->next=node;
+    node->pre=pre;
+    node->next=head_;
+    head_->pre=node;
+    mp_[pmtable]=node;
+
+  }
+
+}
+void PmtableQueue::RemovePmtable(MemTable *pmTable) {
+  if (mp_.count(pmTable) != 0) {
+    ListNode *node = mp_[pmTable], *pre = node->pre, *next = node->next;
+    pre->next = next;
+    next->pre = pre;
+    mp_.erase(pmTable);
+    delete node;
+  }
+}
+size_t PmtableQueue:: capacity(){
+  return mp_.size();
 }
 
 }  // namespace ROCKSDB_NAMESPACE

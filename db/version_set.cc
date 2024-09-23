@@ -4313,6 +4313,128 @@ bool VersionStorageInfo::OverlapInLevel(int level,
                                largest_user_key);
 }
 
+size_t VersionStorageInfo::GetOverlappingSize(int level, const InternalKey* begin,
+                                   const InternalKey* end){
+  assert(level >= 0);
+  assert(level < num_levels_);
+  Slice user_begin, user_end;
+  if (begin != nullptr) {
+    user_begin = begin->user_key();
+  }
+  if (end != nullptr) {
+    user_end = end->user_key();
+  }
+  const Comparator* user_cmp = user_comparator_;
+  const FdWithKeyRange* files = level_files_brief_[level].files;
+  size_t num_files = level_files_brief_[level].num_files;
+  size_t left=0,right=num_files,start;
+  //printf("left:%zu, right :%zu ,size:%zu\n",left,right, files_[level].size());
+  while(left<right){
+    int mid=left+(right-left)/2;
+    const FdWithKeyRange* f = &files[mid];
+    const Slice file_start = ExtractUserKey(f->smallest_key);
+    const Slice file_limit = ExtractUserKey(f->largest_key);
+    if(begin != nullptr && user_cmp->Compare(file_start, user_begin) < 0){
+      if(user_cmp->Compare(file_limit, user_begin) < 0){
+        left=mid+1;
+      }else{
+        right=mid;
+      }
+
+    }else if(begin != nullptr && user_cmp->Compare(file_start, user_begin) > 0){
+      right=mid;
+    }else if(begin != nullptr && user_cmp->Compare(file_start, user_begin) == 0){
+      right=mid;
+    }
+  }
+  if(left==num_files){
+    return 0;
+  }
+  start=left;
+  right=num_files;
+  while(left<right){
+    int mid=left+(right-left)/2;
+    const FdWithKeyRange* f = &files[mid];
+    //const Slice file_start = ExtractUserKey(f->smallest_key);
+    const Slice file_limit = ExtractUserKey(f->largest_key);
+    if(end != nullptr && user_cmp->Compare(file_limit, user_end) < 0){
+      left=left+1;
+
+    }else if(end != nullptr && user_cmp->Compare(file_limit, user_end) > 0){
+      right=mid;
+    }else if(end != nullptr && user_cmp->Compare(file_limit, user_end) == 0){
+      right=mid;
+    }
+
+  }
+  if(left<num_files){
+    const FdWithKeyRange* f = &files[left];
+    const Slice file_start = ExtractUserKey(f->smallest_key);
+    if (end != nullptr && user_cmp->Compare(file_start, user_end) > 0) {
+      left--;
+
+    }
+
+  }
+  return left-start+1;
+
+
+}
+
+void VersionStorageInfo::GetOverlappingInputs(
+        int level,
+        const std::string& begin,  // nullptr means before all keys
+        const std::string& end,    // nullptr means after all keys
+        std::vector<FileMetaData*>* inputs){
+  //assert(level >= 0);
+  //assert(level < config::kNumLevels);
+  inputs->clear();
+  if (level >= num_non_empty_levels_) {
+    // this level is empty, no overlapping inputs
+    return;
+  }
+
+
+  InternalKey begin1(begin,kMaxSequenceNumber,kTypeValue);
+  InternalKey end1(end,kMaxSequenceNumber,kTypeValue);
+
+  if (level > 0) {
+    GetOverlappingInputsRangeBinarySearch(level, &begin1, &end1, inputs, 0,
+                                          nullptr, false, nullptr);
+    return;
+  }
+  Slice user_begin, user_end;
+  user_begin = begin;
+  user_end = end;
+  const Comparator* user_cmp = user_comparator_;
+  for (size_t i = 0; i < files_[level].size();) {
+    FileMetaData* f = files_[level][i++];
+    const Slice file_start = f->smallest.user_key();
+    const Slice file_limit = f->largest.user_key();
+    if ( user_cmp->Compare(file_limit, user_begin) < 0) {
+      // "f" is completely before specified range; skip it
+    } else if ( user_cmp->Compare(file_start, user_end) > 0) {
+      // "f" is completely after specified range; skip it
+    } else {
+      inputs->push_back(f);
+      if (level == 0) {
+        // Level-0 files may overlap each other.  So check if the newly
+        // added file has expanded the range.  If so, restart search.
+        if ( user_cmp->Compare(file_start, user_begin) < 0) {
+          user_begin = file_start;
+          inputs->clear();
+          i = 0;
+        } else if (
+                user_cmp->Compare(file_limit, user_end) > 0) {
+          user_end = file_limit;
+          inputs->clear();
+          i = 0;
+        }
+      }
+    }
+  }
+
+}
 // Store in "*inputs" all files in "level" that overlap [begin,end]
 // If hint_index is specified, then it points to a file in the
 // overlapping range.
@@ -4437,6 +4559,9 @@ void VersionStorageInfo::GetOverlappingInputsRangeBinarySearch(
     std::vector<FileMetaData*>* inputs, int hint_index, int* file_index,
     bool within_interval, InternalKey** next_smallest) const {
   assert(level > 0);
+  for(size_t i = 0;i<level_files_brief_[level].num_files;i++) {
+    printf("lapping file %zu,start:%s, end:%s,\n",i,level_files_brief_[level].files[i].smallest_key.ToString().c_str(),level_files_brief_[level].files[i].largest_key.ToString().c_str());
+  }
 
   auto user_cmp = user_comparator_;
   const FdWithKeyRange* files = level_files_brief_[level].files;
@@ -7154,6 +7279,151 @@ InternalIterator* VersionSet::MakeInputIterator(
   return result;
 }
 
+InternalIterator* VersionSet::MakeInputIteratorL0(
+        const ReadOptions& read_options, const CompactionL0* c,
+        RangeDelAggregator* range_del_agg,
+        const FileOptions& file_options_compactions,
+        [[maybe_unused]] const std::optional<const Slice>& start,
+        [[maybe_unused]]const std::optional<const Slice>& end, [[maybe_unused]]Arena *arena) {
+  auto cfd = c->column_family_data();
+  // Level-0 files have to be merged together.  For other levels,
+  // we will make a concatenating iterator per level.
+  // TODO(opt): use concatenating iterator for level-0 if there is no overlap
+  const size_t space = c->memtable_size() + 1;
+  /*const size_t space = (c->level() == 0 ? c->input_levels(0)->num_files +
+                                          c->num_input_levels() - 1
+                                        : c->num_input_levels());*/
+  InternalIterator** list = new InternalIterator*[space];
+  // First item in the pair is a pointer to range tombstones.
+  // Second item is a pointer to a member of a LevelIterator,
+  // that will be initialized to where CompactionMergingIterator stores
+  // pointer to its range tombstones. This is used by LevelIterator
+  // to update pointer to range tombstones as it traverse different SST files.
+  std::vector<std::pair<std::unique_ptr<TruncatedRangeDelIterator>,
+          std::unique_ptr<TruncatedRangeDelIterator>**>>
+          range_tombstones;
+  size_t num = 0;
+  MemTable * m=c->input_memtable();
+  for (size_t i = 0; i <c->memtable_size();i++) {
+    std::unique_ptr<TruncatedRangeDelIterator> range_tombstone_iter =
+        nullptr;
+    list[num++] =m->NewIterator(read_options, /*seqno_to_time_mapping=*/nullptr);
+    range_tombstones.emplace_back(nullptr,
+                                  nullptr);
+    m =m->next_;
+    /*auto* range_del_iter = m->NewRangeTombstoneIterator(
+        read_options, kMaxSequenceNumber, true *//* immutable_memtable *//*);
+    if (range_del_iter == nullptr) {
+      range_tombstones.emplace_back(nullptr,
+                                    nullptr);
+    } else {
+      range_tombstones.emplace_back(range_del_iter,
+                                    nullptr);
+    }*/
+
+
+    /*list[num++] = cfd->table_cache()->NewIterator(
+        read_options, file_options_compactions,
+        cfd->internal_comparator(), fmd, range_del_agg,
+        c->mutable_cf_options()->prefix_extractor,
+        *//*table_reader_ptr=*//*nullptr,
+        *//*file_read_hist=*//*nullptr, TableReaderCaller::kCompaction,
+        *//*arena=*//*nullptr,
+        *//*skip_filters=*//*false,
+        *//*level=*//*static_cast<int>(c->level(which)),
+        MaxFileSizeForL0MetaPin(*c->mutable_cf_options()),
+        *//*smallest_compaction_key=*//*nullptr,
+        *//*largest_compaction_key=*//*nullptr,
+        *//*allow_unprepared_value=*//*false,
+        c->mutable_cf_options()->block_protection_bytes_per_key,
+        *//*range_del_read_seqno=*//*nullptr,
+        *//*range_del_iter=*//*&range_tombstone_iter);
+    range_tombstones.emplace_back(std::move(range_tombstone_iter),
+                                  nullptr);*/
+
+  }
+  if (c->num_input_files(1)> 0) {
+    std::unique_ptr<TruncatedRangeDelIterator>** tombstone_iter_ptr =
+        nullptr;
+    list[num++] = new LevelIterator(
+        cfd->table_cache(), read_options, file_options_compactions,
+        cfd->internal_comparator(), c->input_levels(1),
+        c->mutable_cf_options()->prefix_extractor,
+        /*should_sample=*/false,
+        /*no per level latency histogram=*/nullptr,
+        TableReaderCaller::kCompaction, /*skip_filters=*/false,
+        /*level=*/static_cast<int>(c->level(1)),
+        c->mutable_cf_options()->block_protection_bytes_per_key,
+        range_del_agg, c->boundaries(1), false, &tombstone_iter_ptr);
+    range_tombstones.emplace_back(nullptr, tombstone_iter_ptr);
+  }
+
+  /*for (size_t which = 0; which < c->num_input_levels(); which++) {
+    if (c->input_levels(which)->num_files != 0) {
+      if (c->level(which) == 0) {
+        const LevelFilesBrief* flevel = c->input_levels(which);
+        for (size_t i = 0; i < flevel->num_files; i++) {
+          const FileMetaData& fmd = *flevel->files[i].file_metadata;
+          if (start.has_value() &&
+              cfd->user_comparator()->CompareWithoutTimestamp(
+                      *start, fmd.largest.user_key()) > 0) {
+            continue;
+          }
+          // We should be able to filter out the case where the end key
+          // equals to the end boundary, since the end key is exclusive.
+          // We try to be extra safe here.
+          if (end.has_value() &&
+              cfd->user_comparator()->CompareWithoutTimestamp(
+                      *end, fmd.smallest.user_key()) < 0) {
+            continue;
+          }
+          std::unique_ptr<TruncatedRangeDelIterator> range_tombstone_iter =
+                  nullptr;
+          list[num++] = cfd->table_cache()->NewIterator(
+                  read_options, file_options_compactions,
+                  cfd->internal_comparator(), fmd, range_del_agg,
+                  c->mutable_cf_options()->prefix_extractor,
+                  *//*table_reader_ptr=*//*nullptr,
+                  *//*file_read_hist=*//*nullptr, TableReaderCaller::kCompaction,
+                  *//*arena=*//*nullptr,
+                  *//*skip_filters=*//*false,
+                  *//*level=*//*static_cast<int>(c->level(which)),
+                  MaxFileSizeForL0MetaPin(*c->mutable_cf_options()),
+                  *//*smallest_compaction_key=*//*nullptr,
+                  *//*largest_compaction_key=*//*nullptr,
+                  *//*allow_unprepared_value=*//*false,
+                  c->mutable_cf_options()->block_protection_bytes_per_key,
+                  *//*range_del_read_seqno=*//*nullptr,
+                  *//*range_del_iter=*//*&range_tombstone_iter);
+          range_tombstones.emplace_back(std::move(range_tombstone_iter),
+                                        nullptr);
+        }
+      } else {
+        // Create concatenating iterator for the files from this level
+        std::unique_ptr<TruncatedRangeDelIterator>** tombstone_iter_ptr =
+                nullptr;
+        list[num++] = new LevelIterator(
+                cfd->table_cache(), read_options, file_options_compactions,
+                cfd->internal_comparator(), c->input_levels(which),
+                c->mutable_cf_options()->prefix_extractor,
+                *//*should_sample=*//*false,
+                *//*no per level latency histogram=*//*nullptr,
+                TableReaderCaller::kCompaction, *//*skip_filters=*//*false,
+                *//*level=*//*static_cast<int>(c->level(which)),
+                c->mutable_cf_options()->block_protection_bytes_per_key,
+                range_del_agg, c->boundaries(which), false, &tombstone_iter_ptr);
+        range_tombstones.emplace_back(nullptr, tombstone_iter_ptr);
+      }
+    }
+  }*/
+  assert(num <= space);
+  InternalIterator* result = NewCompactionMergingIterator(
+          &c->column_family_data()->internal_comparator(), list,
+          static_cast<int>(num), range_tombstones);
+  delete[] list;
+  return result;
+}
+
 Status VersionSet::GetMetadataForFile(uint64_t number, int* filelevel,
                                       FileMetaData** meta,
                                       ColumnFamilyData** cfd) {
@@ -7308,8 +7578,8 @@ ColumnFamilyData* VersionSet::CreateColumnFamily(
   AppendVersion(new_cfd, v);
   // GetLatestMutableCFOptions() is safe here without mutex since the
   // cfd is not available to client
-  new_cfd->CreateNewMemtable(*new_cfd->GetLatestMutableCFOptions(),
-                             LastSequence());
+  /*new_cfd->CreateNewMemtable(*new_cfd->GetLatestMutableCFOptions(),
+                             LastSequence());*/
   new_cfd->SetLogNumber(edit->GetLogNumber());
   return new_cfd;
 }

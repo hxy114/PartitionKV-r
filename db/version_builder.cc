@@ -844,6 +844,7 @@ class VersionBuilder::Rep {
   }
 
   Status ApplyFileDeletion(int level, uint64_t file_number) {
+    //printf("level:%d,VersionStorageInfo::FileLocation::Invalid().GetLevel():%d\n",level,VersionStorageInfo::FileLocation::Invalid().GetLevel());
     assert(level != VersionStorageInfo::FileLocation::Invalid().GetLevel());
 
     const int current_level = GetCurrentLevelForTableFile(file_number);
@@ -1077,7 +1078,7 @@ class VersionBuilder::Rep {
     for (const auto& deleted_file : edit->GetDeletedFiles()) {
       const int level = deleted_file.first;
       const uint64_t file_number = deleted_file.second;
-
+      //printf("level:%d,file_number:%lu\n",level,file_number);
       const Status s = ApplyFileDeletion(level, file_number);
       if (!s.ok()) {
         return s;

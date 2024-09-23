@@ -483,6 +483,7 @@ class VersionEdit {
                const uint64_t compensated_range_deletion_size,
                uint64_t tail_size, bool user_defined_timestamps_persisted) {
     assert(smallest_seqno <= largest_seqno);
+    printf("hhhhh smallest:%s, largest:%s\n",smallest.user_key().ToString().c_str(), largest.user_key().ToString().c_str());
     new_files_.emplace_back(
         level,
         FileMetaData(file, file_path_id, file_size, smallest, largest,

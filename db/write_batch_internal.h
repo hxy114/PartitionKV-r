@@ -27,7 +27,7 @@ namespace ROCKSDB_NAMESPACE {
 class MemTable;
 class FlushScheduler;
 class ColumnFamilyData;
-
+class PartitionIndexLayer;
 class ColumnFamilyMemTables {
  public:
   virtual ~ColumnFamilyMemTables() {}
@@ -37,6 +37,7 @@ class ColumnFamilyMemTables {
   // been processed)
   virtual uint64_t GetLogNumber() const = 0;
   virtual MemTable* GetMemTable() const = 0;
+  virtual PartitionIndexLayer* GetPartitionIndexLayer() const = 0;
   virtual ColumnFamilyHandle* GetColumnFamilyHandle() = 0;
   virtual ColumnFamilyData* current() { return nullptr; }
 };
@@ -56,6 +57,11 @@ class ColumnFamilyMemTablesDefault : public ColumnFamilyMemTables {
   MemTable* GetMemTable() const override {
     assert(ok_);
     return mem_;
+  }
+
+  PartitionIndexLayer* GetPartitionIndexLayer() const override {
+    assert(ok_);
+    return nullptr;
   }
 
   ColumnFamilyHandle* GetColumnFamilyHandle() override { return nullptr; }

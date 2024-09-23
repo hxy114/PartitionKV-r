@@ -16,6 +16,7 @@
 
 #include "cache/cache_reservation_manager.h"
 #include "db/memtable_list.h"
+#include "memtable/indexBtree.h"
 #include "db/table_cache.h"
 #include "db/table_properties_collector.h"
 #include "db/write_batch_internal.h"
@@ -39,6 +40,7 @@ class MemTable;
 class MemTableListVersion;
 class CompactionPicker;
 class Compaction;
+class CompactionL0;
 class InternalKey;
 class InternalStats;
 class ColumnFamilyData;
@@ -373,6 +375,7 @@ class ColumnFamilyData {
 
   MemTableList* imm() { return &imm_; }
   MemTable* mem() { return mem_; }
+  PartitionIndexLayer* partitionIndexLayer() { return partitionIndexLayer_; }
 
   bool IsEmpty() {
     return mem()->GetFirstSequenceNumber() == 0 && imm()->NumNotFlushed() == 0;
@@ -397,6 +400,8 @@ class ColumnFamilyData {
   // See Memtable constructor for explanation of earliest_seq param.
   MemTable* ConstructNewMemtable(const MutableCFOptions& mutable_cf_options,
                                  SequenceNumber earliest_seq);
+  MemTable* ConstructNewMemtable(const MutableCFOptions& mutable_cf_options,
+                                 SequenceNumber earliest_seq, PartitionNode *partitionNode,PmLogHead *pmLogHead);
   void CreateNewMemtable(const MutableCFOptions& mutable_cf_options,
                          SequenceNumber earliest_seq);
 
@@ -408,6 +413,9 @@ class ColumnFamilyData {
   bool NeedsCompaction() const;
   // REQUIRES: DB mutex held
   Compaction* PickCompaction(const MutableCFOptions& mutable_options,
+                             const MutableDBOptions& mutable_db_options,
+                             LogBuffer* log_buffer);
+  CompactionL0* PickCompactionL0(const MutableCFOptions& mutable_options,
                              const MutableDBOptions& mutable_db_options,
                              LogBuffer* log_buffer);
 
@@ -444,6 +452,7 @@ class ColumnFamilyData {
                            const std::string& trim_ts);
 
   CompactionPicker* compaction_picker() { return compaction_picker_.get(); }
+  CompactionPicker* compactionl0_picker() { return compaction_picker_l0_.get(); }
   // thread-safe
   const Comparator* user_comparator() const {
     return internal_comparator_.user_comparator();
@@ -575,9 +584,11 @@ class ColumnFamilyData {
   int GetUnflushedMemTableCountForWriteStallCheck() const {
     return (mem_->IsEmpty() ? 0 : 1) + imm_.NumNotFlushed();
   }
-
+  size_t GetQueueSize();
  private:
   friend class ColumnFamilySet;
+  friend class PartitionIndexLayer;
+  friend class DBImpl;
   ColumnFamilyData(uint32_t id, const std::string& name,
                    Version* dummy_versions, Cache* table_cache,
                    WriteBufferManager* write_buffer_manager,
@@ -628,6 +639,7 @@ class ColumnFamilyData {
 
   MemTable* mem_;
   MemTableList imm_;
+  PartitionIndexLayer * partitionIndexLayer_;
   SuperVersion* super_version_;
 
   // An ordinal representing the current SuperVersion. Updated by
@@ -652,7 +664,8 @@ class ColumnFamilyData {
 
   // An object that keeps all the compaction stats
   // and picks the next compaction
-  std::unique_ptr<CompactionPicker> compaction_picker_;
+  std::unique_ptr<CompactionPicker> compaction_picker_;//用来找出压缩的东西
+  std::unique_ptr<CompactionPicker> compaction_picker_l0_;//用来找出压缩的东西
 
   ColumnFamilySet* column_family_set_;
 
@@ -664,7 +677,12 @@ class ColumnFamilyData {
   // If true --> this ColumnFamily is currently present in
   // DBImpl::compaction_queue_
   bool queued_for_compaction_;
-
+ public:
+  PmtableQueue top_queue_ ;
+  PmtableQueue high_queue_ ;
+  PmtableQueue low_queue_ ;
+  std::vector<std::pair<std::string,std::string>>L0_range_;
+ private:
   uint64_t prev_compaction_needed_bytes_;
 
   // if the database was opened with 2pc enabled
@@ -892,6 +910,7 @@ class ColumnFamilyMemTablesImpl : public ColumnFamilyMemTables {
   //           under a DB mutex OR from a write thread
   MemTable* GetMemTable() const override;
 
+  PartitionIndexLayer* GetPartitionIndexLayer() const override;
   // Returns column family handle for the selected column family
   // REQUIRES: use this function of DBImpl::column_family_memtables_ should be
   //           under a DB mutex OR from a write thread

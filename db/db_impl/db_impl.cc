@@ -183,6 +183,7 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
 #else   // COERCE_CONTEXT_SWITCH
       mutex_(stats_, immutable_db_options_.clock, DB_MUTEX_WAIT_MICROS,
              immutable_db_options_.use_adaptive_mutex),
+      background_work_finished_signal_L0_(&mutex_),
 #endif  // COERCE_CONTEXT_SWITCH
       default_cf_handle_(nullptr),
       error_handler_(this, immutable_db_options_, &mutex_),
@@ -256,7 +257,8 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
       blob_callback_(immutable_db_options_.sst_file_manager.get(), &mutex_,
                      &error_handler_, &event_logger_,
                      immutable_db_options_.listeners, dbname_),
-      lock_wal_count_(0) {
+      lock_wal_count_(0),
+      use_partition_(options.use_partition_){
   // !batch_per_trx_ implies seq_per_batch_ because it is only unset for
   // WriteUnprepared, which should use seq_per_batch_.
   assert(batch_per_txn_ || seq_per_batch_);
@@ -1513,6 +1515,10 @@ int DBImpl::FindMinimumEmptyLevelFitting(
 }
 
 Status DBImpl::FlushWAL(const WriteOptions& write_options, bool sync) {
+  if (use_partition_) {
+    IOStatus io_s;
+    return io_s;
+  }
   if (manual_wal_flush_) {
     IOStatus io_s;
     {
@@ -2113,6 +2119,9 @@ InternalIterator* DBImpl::NewInternalIterator(
 
 ColumnFamilyHandle* DBImpl::DefaultColumnFamily() const {
   return default_cf_handle_;
+}
+size_t DBImpl::DefaultColumnFamilyQueueSize() const {
+      return default_cf_handle_->cfd()->GetQueueSize();
 }
 
 ColumnFamilyHandle* DBImpl::PersistentStatsColumnFamily() const {
@@ -3615,9 +3624,9 @@ Status DBImpl::CreateColumnFamilyImpl(const ReadOptions& read_options,
       InstallSuperVersionAndScheduleWork(cfd, &sv_context,
                                          *cfd->GetLatestMutableCFOptions());
 
-      if (!cfd->mem()->IsSnapshotSupported()) {
+      /*if (!cfd->mem()->IsSnapshotSupported()) {
         is_snapshot_supported_ = false;
-      }
+      }*/
 
       cfd->set_initialized();
 

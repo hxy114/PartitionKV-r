@@ -443,7 +443,7 @@ Status DBImpl::Recover(
     // MANIFEST indicates the recovery to recover existing db. If no MANIFEST
     // can be found, a new db will be created.
     std::string manifest_path;
-    if (!immutable_db_options_.best_efforts_recovery) {
+    if (!immutable_db_options_.best_efforts_recovery) {//找到current和mainfile，不存在创建
       s = env_->FileExists(current_fname);
     } else {
       s = Status::NotFound();
@@ -472,7 +472,7 @@ Status DBImpl::Recover(
     }
     if (s.IsNotFound()) {
       if (immutable_db_options_.create_if_missing) {
-        s = NewDB(&files_in_dbname);
+        s = NewDB(&files_in_dbname);//创建mainfile和current
         is_new_db = true;
         if (!s.ok()) {
           return s;
@@ -493,7 +493,7 @@ Status DBImpl::Recover(
     }
     // Verify compatibility of file_options_ and filesystem
     {
-      std::unique_ptr<FSRandomAccessFile> idfile;
+      std::unique_ptr<FSRandomAccessFile> idfile;//检查文件系统是否可用
       FileOptions customized_fs(file_options_);
       customized_fs.use_direct_reads |=
           immutable_db_options_.use_direct_io_for_flush_and_compaction;
@@ -531,12 +531,12 @@ Status DBImpl::Recover(
   assert(db_id_.empty());
   Status s;
   bool missing_table_file = false;
-  if (!immutable_db_options_.best_efforts_recovery) {
+  if (!immutable_db_options_.best_efforts_recovery) {//right
     // Status of reading the descriptor file
     Status desc_status;
     s = versions_->Recover(column_families, read_only, &db_id_,
                            /*no_error_if_files_missing=*/false, is_retry,
-                           &desc_status);
+                           &desc_status);//从mainfile恢复版本数据
     desc_status.PermitUncheckedError();
     if (is_retry) {
       RecordTick(stats_, FILE_READ_CORRUPTION_RETRY_COUNT);
@@ -790,7 +790,7 @@ Status DBImpl::Recover(
       }
     }
 
-    if (!wal_files.empty()) {
+    if (!wal_files.empty() && !use_partition_) {//日志恢复
       // Recover in the order in which the wals were generated
       std::vector<uint64_t> wals;
       wals.reserve(wal_files.size());
@@ -1937,7 +1937,11 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                            uint64_t log_file_num, uint64_t recycle_log_number,
                            size_t preallocate_block_size,
                            log::Writer** new_log) {
+
   IOStatus io_s;
+  if(use_partition_) {
+    return io_s;
+  }
   std::unique_ptr<FSWritableFile> lfile;
 
   DBOptions db_options =
@@ -2107,8 +2111,8 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   s = impl->Recover(column_families, false /* read_only */,
                     false /* error_if_wal_file_exists */,
                     false /* error_if_data_exists_in_wals */, is_retry,
-                    &recovered_seq, &recovery_ctx, can_retry);
-  if (s.ok()) {
+                    &recovered_seq, &recovery_ctx, can_retry);//恢复状态
+  if (s.ok() && !impl->use_partition_) {//创建wal
     uint64_t new_log_number = impl->versions_->NewFileNumber();
     log::Writer* new_log = nullptr;
     const size_t preallocate_block_size =
@@ -2166,6 +2170,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       }
     }
   }
+
   if (s.ok()) {
     s = impl->LogAndApplyForRecovery(recovery_ctx);
   }
@@ -2207,6 +2212,24 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     }
   }
 
+  if(s.ok() && impl->use_partition_) {
+    auto cfd =
+        impl->versions_->GetColumnFamilySet()->GetColumnFamily(kDefaultColumnFamilyName);
+    /*VersionSet *const versions,
+        port::Mutex &mutex,
+        port::CondVar &background_work_finished_signal_L0_,
+        const InternalKeyComparator &internal_comparator,
+        PmtableQueue &top_queue,
+        PmtableQueue &high_queue,
+        PmtableQueue &low_queue,
+        DBImpl *dbImpl,
+        ColumnFamilyData *cfd*/
+    nvmManager=new NvmManager(false);
+    cfd->partitionIndexLayer_ = new PartitionIndexLayer(impl->versions_.get(), impl->mutex_, impl->background_work_finished_signal_L0_,
+                                                        cfd->internal_comparator_, cfd->top_queue_,cfd->high_queue_,cfd->low_queue_,impl,cfd);
+    cfd->partitionIndexLayer_->init();
+  }
+
   if (s.ok()) {
     SuperVersionContext sv_context(/* create_superversion */ true);
     for (auto cfd : *impl->versions_->GetColumnFamilySet()) {
@@ -2221,7 +2244,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     s = impl->PersistentStatsProcessFormatVersion();
   }
 
-  if (s.ok()) {
+  /*if (s.ok()) {
     for (auto cfd : *impl->versions_->GetColumnFamilySet()) {
       if (!cfd->mem()->IsSnapshotSupported()) {
         impl->is_snapshot_supported_ = false;
@@ -2237,7 +2260,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
         break;
       }
     }
-  }
+  }*/
   TEST_SYNC_POINT("DBImpl::Open:Opened");
   Status persist_options_status;
   if (s.ok()) {
@@ -2294,7 +2317,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     impl->mutex_.Unlock();
   }
 
-  if (s.ok()) {
+  if (s.ok() && !impl->use_partition_) {
     ROCKS_LOG_HEADER(impl->immutable_db_options_.info_log, "DB pointer %p",
                      impl);
     LogFlush(impl->immutable_db_options_.info_log);

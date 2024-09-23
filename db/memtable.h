@@ -11,6 +11,7 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -24,6 +25,7 @@
 #include "db/version_edit.h"
 #include "memory/allocator.h"
 #include "memory/concurrent_arena.h"
+#include "memory/nvm_arena.h"
 #include "monitoring/instrumented_mutex.h"
 #include "options/cf_options.h"
 #include "rocksdb/db.h"
@@ -41,7 +43,8 @@ class Mutex;
 class MemTableIterator;
 class MergeContext;
 class SystemClock;
-
+class PartitionIndexLayer;
+class PartitionNode;
 struct ImmutableMemTableOptions {
   explicit ImmutableMemTableOptions(const ImmutableOptions& ioptions,
                                     const MutableCFOptions& mutable_cf_options);
@@ -91,6 +94,24 @@ using MultiGetRange = MultiGetContext::Range;
 // written to (aka the 'immutable memtables').
 class MemTable {
  public:
+  enum Role{
+      pmtable,
+      immuPmtable,
+      other_immuPmtable,
+  };
+  enum PmTable_Status{
+      IN_RECEVIE,
+      IN_LOW_QUQUE,
+      IN_HIGH_QUEUE,
+      IN_TOP_QUEUE,
+      IN_FOLLOW,
+      IN_HEAD,
+      IN_COMPACTIONING,
+      IN_COMPACTIONED,
+  };
+  friend class PartitionIndexLayer;
+  friend class PartitionNode;
+  friend class L0CompactionBuilder;
   struct KeyComparator : public MemTableRep::KeyComparator {
     const InternalKeyComparator comparator;
     explicit KeyComparator(const InternalKeyComparator& c) : comparator(c) {}
@@ -114,10 +135,16 @@ class MemTable {
                     const MutableCFOptions& mutable_cf_options,
                     WriteBufferManager* write_buffer_manager,
                     SequenceNumber earliest_seq, uint32_t column_family_id);
+
+  explicit MemTable(const InternalKeyComparator& comparator,
+                    const ImmutableOptions& ioptions,
+                    const MutableCFOptions& mutable_cf_options,
+                    WriteBufferManager* write_buffer_manager,
+                    SequenceNumber earliest_seq, uint32_t column_family_id, PartitionNode *partitionNode, PmLogHead *pmLogHead);
   // No copying allowed
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
-
+  void init(PartitionNode *partitionNode);
   // Do not delete this MemTable unless Unref() indicates it not in use.
   ~MemTable();
 
@@ -132,11 +159,19 @@ class MemTable {
   // operations on the same MemTable.
   MemTable* Unref() {
     --refs_;
+
     assert(refs_ >= 0);
     if (refs_ <= 0) {
       return this;
     }
     return nullptr;
+    /*--refs_;
+    assert(refs_ >= 0);
+    if (refs_ <= 0) {
+      delete this;
+      return nullptr;
+    }
+    return nullptr;*/
   }
 
   // Returns an estimate of the number of bytes of data in use by this
@@ -211,7 +246,9 @@ class MemTable {
   InternalIterator* NewIterator(
       const ReadOptions& read_options,
       UnownedPtr<const SeqnoToTimeMapping> seqno_to_time_mapping, Arena* arena);
-
+  InternalIterator* NewIterator(
+      const ReadOptions& read_options,
+      UnownedPtr<const SeqnoToTimeMapping> seqno_to_time_mapping);
   // Returns an iterator that yields the range tombstones of the memtable.
   // The caller must ensure that the underlying MemTable remains live
   // while the returned iterator is live.
@@ -571,7 +608,19 @@ class MemTable {
   static Status VerifyEntryChecksum(const char* entry,
                                     uint32_t protection_bytes_per_key,
                                     bool allow_data_in_errors = false);
-
+  void SetRole(Role role);
+  Role GetRole();
+  void SetLeftFather(PartitionNode *left_father);
+  void SetRightFather(PartitionNode *right_father);
+  void SetPmTableStatus(PmTable_Status pmTableStatus);
+  PmTable_Status GetPmTableStatus();
+  PartitionNode * GetLeftFather();
+  PartitionNode * GetRightFather();
+  void SetNext(MemTable *memTable);
+  size_t ApproximateNvmMemoryUsage();
+  void FreePmtable();
+  std::string &GetMinKey();
+  std::string &GetMaxKey();
  private:
   enum FlushStateEnum { FLUSH_NOT_REQUESTED, FLUSH_REQUESTED, FLUSH_SCHEDULED };
 
@@ -579,12 +628,15 @@ class MemTable {
   friend class MemTableBackwardIterator;
   friend class MemTableList;
 
+
   KeyComparator comparator_;
   const ImmutableMemTableOptions moptions_;
   int refs_;
   const size_t kArenaBlockSize;
   AllocTracker mem_tracker_;
   ConcurrentArena arena_;
+  PmLogHead *pmLogHead_;
+  NvmArena nvmArena_;
   std::unique_ptr<MemTableRep> table_;
   std::unique_ptr<MemTableRep> range_del_table_;
   std::atomic_bool is_range_del_table_empty_;
@@ -675,6 +727,15 @@ class MemTable {
   // Otherwise, this field just contains an empty Slice.
   Slice newest_udt_;
 
+public:
+  Role role_;
+  PmTable_Status status_;//immu才有效
+  PartitionNode *left_father_;
+  PartitionNode *right_father_;
+  std::string min_key_;
+  std::string max_key_;
+  MemTable *next_;
+private:
   // Updates flush_state_ using ShouldFlushNow()
   void UpdateFlushState();
 
@@ -716,5 +777,30 @@ class MemTable {
 };
 
 const char* EncodeKey(std::string* scratch, const Slice& target);
+
+
+class PmtableQueue{
+public:
+    class ListNode{
+    public:
+        ListNode(MemTable *pmTable);
+        MemTable *pmTable_;
+        ListNode *pre,*next;
+
+    };
+
+    PmtableQueue();
+    ~PmtableQueue();
+    ListNode *GetHead();
+    void InsertPmtable(MemTable *pmtable);
+    void RemovePmtable(MemTable *pmTable);
+    size_t capacity();
+private:
+    std::unordered_map<MemTable*,ListNode*>mp_;
+    ListNode *head_;
+
+
+};
+
 
 }  // namespace ROCKSDB_NAMESPACE
