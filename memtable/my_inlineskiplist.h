@@ -749,18 +749,18 @@ MyInlineSkipList<Comparator>::AllocateNode(size_t key_size, int height) {
   // next_[0].  key_size is the bytes for the key, which comes just after
   // the Node.
   char* key = nvm_allocator_->Allocate(key_size);//0
-  printf("key:%p \n",key);
+  //printf("key:%p \n",key);
   char* raw = allocator_->AllocateAligned(prefix + sizeof(Node) + sizeof(char*));
   Node* x = reinterpret_cast<Node*>(raw + prefix);
-  printf("x[1]:%p\n",&(x->next_[1]));
+  //printf("x[1]:%p\n",&(x->next_[1]));
   char** x_next=reinterpret_cast<char**>(raw + prefix + sizeof (Node));
-  printf("**x_next,%p \n",x_next);
+  //printf("**x_next,%p \n",x_next);
 
   *x_next = key;
   //memcpy(x_next, &key,sizeof(char *));
   //*x_next= key;
-  printf("x_next：%p \n",*x_next);
-  printf("*x[1]:%p\n",static_cast<void*>(x->next_[1]));
+  //printf("x_next：%p \n",*x_next);
+  //printf("*x[1]:%p\n",static_cast<void*>(x->next_[1]));
 
   // Once we've linked the node into the skip list we don't actually need
   // to know its height, because we can implicitly use the fact that we
@@ -882,10 +882,10 @@ template <bool UseCAS>
 bool MyInlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
                                         bool allow_partial_splice_fix) {
   Node* x = reinterpret_cast<Node*>(const_cast<char*>(key)) - 1;
-  printf("key_ptr:%p\n",key);
+  //printf("key_ptr:%p\n",key);
   //char * k=x->Key();
   key = reinterpret_cast<char*>(*reinterpret_cast<const uint64_t *>(key));
-  printf("key:%p\n",key);
+  //printf("key:%p\n",key);
   //ParsedInternalKey result;
   //ParseInternalKey(key,&result,false);
 
@@ -894,12 +894,12 @@ bool MyInlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
   //std::cout<<"inserted type:"<<result.type<<std::endl;
   const DecodedKey key_decoded = compare_.decode_key(key);
 
-  ParsedInternalKey result1;
-  ParseInternalKey(key_decoded,&result1,false);
+  //ParsedInternalKey result1;
+  //ParseInternalKey(key_decoded,&result1,false);
 
-  std::cout<<"inserted 900key:"<<result1.user_key.ToString()<<std::endl;
-  std::cout<<"inserted 900seq:"<<result1.sequence<<std::endl;
-  std::cout<<"inserted 900type:"<<result1.type<<std::endl;
+  //std::cout<<"inserted 900key:"<<result1.user_key.ToString()<<std::endl;
+  //std::cout<<"inserted 900seq:"<<result1.sequence<<std::endl;
+  //std::cout<<"inserted 900type:"<<result1.type<<std::endl;
 
   int height = x->UnstashHeight();
   assert(height >= 1 && height <= kMaxHeight_);
@@ -1093,13 +1093,13 @@ bool MyInlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
     splice->height_ = 0;
   }
 
-  const char*  k=x->Key();
-  ParsedInternalKey result;
-  ParseInternalKey(k,&result,false);
-  std::cout<<"right"<<(k==key)<<std::endl;
-  std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
-  std::cout<<"inserted seq:"<<result.sequence<<std::endl;
-  std::cout<<"inserted type:"<<result.type<<std::endl;
+  //const char*  k=x->Key();
+  //ParsedInternalKey result;
+  //ParseInternalKey(k,&result,false);
+  //std::cout<<"right"<<(k==key)<<std::endl;
+  //std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
+  //std::cout<<"inserted seq:"<<result.sequence<<std::endl;
+  //std::cout<<"inserted type:"<<result.type<<std::endl;
   return true;
 }
 

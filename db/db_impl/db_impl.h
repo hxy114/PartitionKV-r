@@ -665,7 +665,13 @@ class DBImpl : public DB {
   Status GetImpl(const ReadOptions& read_options,
                  ColumnFamilyHandle* column_family, const Slice& key,
                  PinnableSlice* value, std::string* timestamp);
-
+  bool Get(std::vector<MemTable*>&list,const LookupKey& key, std::string* value,
+                   PinnableWideColumns* columns, std::string* timestamp, Status* s,
+                   MergeContext* merge_context,
+                   SequenceNumber* max_covering_tombstone_seq,
+                   const ReadOptions& read_opts, bool immutable_memtable,
+                   ReadCallback* callback = nullptr, bool* is_blob_index = nullptr,
+                   bool do_merge = true);
   // Function that Get and KeyMayExist call with no_io true or false
   // Note: 'value_found' from KeyMayExist propagates here
   // This function is also called by GetMergeOperands
@@ -680,6 +686,12 @@ class DBImpl : public DB {
   ArenaWrappedDBIter* NewIteratorImpl(const ReadOptions& options,
                                       ColumnFamilyHandleImpl* cfh,
                                       SuperVersion* sv, SequenceNumber snapshot,
+                                      ReadCallback* read_callback,
+                                      bool expose_blob_index = false,
+                                      bool allow_refresh = true);
+  ArenaWrappedDBIter* NewIteratorImplL0(const ReadOptions& options,
+                                      ColumnFamilyHandleImpl* cfh,
+                                      Version* sv, SequenceNumber snapshot,
                                       ReadCallback* read_callback,
                                       bool expose_blob_index = false,
                                       bool allow_refresh = true);
@@ -817,6 +829,12 @@ class DBImpl : public DB {
   InternalIterator* NewInternalIterator(const ReadOptions& read_options,
                                         ColumnFamilyData* cfd,
                                         SuperVersion* super_version,
+                                        Arena* arena, SequenceNumber sequence,
+                                        bool allow_unprepared_value,
+                                        ArenaWrappedDBIter* db_iter = nullptr);
+  InternalIterator* NewInternalIteratorL0(const ReadOptions& read_options,
+                                        ColumnFamilyData* cfd,
+                                        Version* super_version,
                                         Arena* arena, SequenceNumber sequence,
                                         bool allow_unprepared_value,
                                         ArenaWrappedDBIter* db_iter = nullptr);

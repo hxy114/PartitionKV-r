@@ -429,14 +429,6 @@ Status CompactionL0Outputs::AddToOutput(
     smallest_preferred_seqno_ =
         std::min(smallest_preferred_seqno_, preferred_seqno);
   }
-  std::cout<<"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:%s"<<key.ToString()<<std::endl;
-  std::cout<<"valuelllllllllllllllllllllllllll:%s"<<value.ToString()<<std::endl;
-  std::cout<<"ssssssssssssssssssssssssssssssss:%s"<<ikey.sequence<<std::endl;
-  std::cout<<"tttttttttttttttttttttttttttttttt:%s"<<ikey.type<<std::endl;
-  /*printf("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk:%s\n",key.ToString().c_str());
-  printf("valuelllllllllllllllllllllllllll:%s\n",value.ToString().c_str());
-  printf("ssssssssssssssssssssssssssssssss%lu\n", ikey.sequence);
-  printf("tttttttttttttttttttttttttttttttt%hhu\n", ikey.type);*/
   s = current_output().meta.UpdateBoundaries(key, value, ikey.sequence,
                                              ikey.type);
 

@@ -563,7 +563,7 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
   //auto current=versions_->current();
   //current->Ref();
   //Log(options_.info_log,"seek L0");
-  printf("top:%zu, high:%zu,low:%zu\n",top_queue_.capacity(),high_queue_.capacity(),low_queue_.capacity());
+ // printf("top:%zu, high:%zu,low:%zu\n",top_queue_.capacity(),high_queue_.capacity(),low_queue_.capacity());
   CompactionL0* c= nullptr;
   std::vector<std::pair<std::string,std::string>>top_range;
   auto top=top_queue_.GetHead(),high=high_queue_.GetHead(),low=low_queue_.GetHead();
@@ -591,8 +591,12 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
         is_cover=CoverRange(startey,endkey,L0_range_);
         if(!is_cover){
           std::vector<FileMetaData*>input;
-          vstorage_->GetOverlappingInputs(1,startey,endkey,&input);
+          InternalKey start=InternalKey(startey, kMaxSequenceNumber, ValueType::kTypeValue) ;
+          InternalKey end=InternalKey(endkey, 0, ValueType::kTypeValue) ;
+          //size_t ss =vstorage_->GetOverlappingSize(1,&start,&end);
 
+          vstorage_->GetOverlappingInputs(1,&start,&end,&input);
+          //std::cout<<"first size:"<<ss<<"second size: "<<input.size()<<std::endl;
           if(!input.empty()){
             //AddBoundaryInputs(versions_->icmp_, current->files_[1], &input);
             is_cover=compaction_picker_->AreFilesInCompaction(input);
@@ -630,11 +634,11 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
             //c = versions_->PickCompactionL0(immupmtableptr,input,n,all_start,all_limit,current);
             break;
           }
-          printf("top:input cover, id:%d\n",gettid());
+          //printf("top:input cover, id:%d\n",gettid());
         }
-        printf("top:L0range cover, id:%d\n",gettid());
+        //printf("top:L0range cover, id:%d\n",gettid());
       }
-      printf("top:top_range cover, id:%d\n",gettid());
+      //printf("top:top_range cover, id:%d\n",gettid());
       top_range.emplace_back(std::make_pair(startey,endkey));
     }
     top=top->next;
@@ -666,7 +670,13 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
           is_cover = CoverRange(startey, endkey, L0_range_);
           if (!is_cover) {
             std::vector<FileMetaData*> input;
-            vstorage_->GetOverlappingInputs(1,startey,endkey,&input);
+            InternalKey start=InternalKey(startey, kMaxSequenceNumber, ValueType::kTypeValue) ;
+            InternalKey end=InternalKey(endkey, 0, ValueType::kTypeValue) ;
+            //size_t ss =vstorage_->GetOverlappingSize(1,&start,&end);
+
+            vstorage_->GetOverlappingInputs(1,&start,&end,&input);
+            //std::cout<<"first size:"<<ss<<"second size: "<<input.size()<<std::endl;
+            //vstorage_->GetOverlappingInputs(1,startey,endkey,&input);
             /*current->GetOverlappingInputs(1, startey, endkey,
                                           &input);*/
             if (!input.empty()) {
@@ -713,11 +723,11 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
               c=GetCompaction(L0_range_.back().first,L0_range_.back().second);
               break;
             }
-            printf("high:input cover, id:%d\n,",gettid());
+           // printf("high:input cover, id:%d\n,",gettid());
           }
-          printf("high:L0range cover id:%d\n",gettid());
+         // printf("high:L0range cover id:%d\n",gettid());
         }
-        printf("high:top_range cover id:%d\n",gettid());
+        //printf("high:top_range cover id:%d\n",gettid());
       }
       high = high->next;
     }
@@ -747,8 +757,14 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
           is_cover = CoverRange(startey, endkey, L0_range_);
           if (!is_cover) {
             std::vector<FileMetaData*> input;
-            vstorage_->GetOverlappingInputs(1,startey,endkey,&input);
+            InternalKey start=InternalKey(startey, kMaxSequenceNumber, ValueType::kTypeValue) ;
+            InternalKey end=InternalKey(endkey, 0, ValueType::kTypeValue) ;
+            //size_t ss =vstorage_->GetOverlappingSize(1,&start,&end);
 
+            vstorage_->GetOverlappingInputs(1,&start,&end,&input);
+            //std::cout<<"first size:"<<ss<<"second size: "<<input.size()<<std::endl;
+            //vstorage_->GetOverlappingInputs(1,startey,endkey,&input);
+            //std::cout<<input
             /*current->GetOverlappingInputs(1, startey, endkey,
                                           &input);*/
             if (!input.empty()) {
@@ -794,11 +810,11 @@ CompactionL0* L0CompactionBuilder::PickCompaction() {
               c=GetCompaction(L0_range_.back().first,L0_range_.back().second);
               break;
             }
-            printf("low:input cover, id:%d\n,",gettid());
+           // printf("low:input cover, id:%d\n,",gettid());
           }
-          printf("low:L0range cover id:%d\n",gettid());
+         // printf("low:L0range cover id:%d\n",gettid());
         }
-        printf("low:top_range cover id:%d\n",gettid());
+       // printf("low:top_range cover id:%d\n",gettid());
       }
       low=low->next;
 

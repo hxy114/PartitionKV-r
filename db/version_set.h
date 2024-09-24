@@ -1062,7 +1062,7 @@ class Version {
   friend class VersionSet;
   friend class VersionEditHandler;
   friend class VersionEditHandlerPointInTime;
-
+  friend class DBImpl;
   const InternalKeyComparator* internal_comparator() const {
     return storage_info_.internal_comparator_;
   }

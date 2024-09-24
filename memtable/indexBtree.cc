@@ -35,7 +35,7 @@ PartitionIndexLayer::~PartitionIndexLayer(){
 PartitionNode* PartitionIndexLayer::seek_partition(const std::string &key){
   //mutex_.AssertHeld();
   auto find=bmap->lower_bound(key);
-  bmap->begin();
+  //bmap->begin();
   return find!=bmap->end()?find->second:nullptr;
 }
 
@@ -107,6 +107,7 @@ void PartitionIndexLayer::Add(SequenceNumber s, ValueType type, const Slice& key
 
 
     auto partition_node=seek_partition(key.ToString());
+
     PartitionNode::MyStatus status=partition_node->Add(s,type,key,value,false,capacity_,kv_prot_info,allow_concurrent,post_process_info,hint);
     if(status==PartitionNode::MyStatus::sucess){
       return;
@@ -136,7 +137,7 @@ void PartitionIndexLayer::Add(SequenceNumber s, ValueType type, const Slice& key
     }
     partition_node->Add(s,type,key,value,true,capacity_,kv_prot_info,allow_concurrent,post_process_info,hint);
 
-
+    assert(partition_node->start_key<=partition_node->pmtable->GetMinKey() && partition_node->end_key>=partition_node->pmtable->GetMaxKey() &&partition_node->pmtable->GetMinKey()<=partition_node->pmtable->GetMaxKey() );
 
 }
 PartitionNode * PartitionIndexLayer::getAceeptNode(Version *current,PartitionNode *partitionNode){
@@ -272,9 +273,7 @@ PartitionNode::MyStatus PartitionIndexLayer::split(PartitionNode *partitionNode,
       InternalKey start=InternalKey(partitionNode->start_key, max_snapshot, ValueType::kTypeValue) ;
       InternalKey end=InternalKey(partitionNode->end_key, min_snapshot, ValueType::kTypeValue) ;
       current->storage_info()->GetOverlappingInputs(1,&start,&end,&files);
-      for (size_t i = 0;i<files.size();i++){
-        ROCKS_LOG_INFO(dbImpl_->immutable_db_options().logger,"file %zu,start:%s, end:%s,\n",i,files[i]->smallest.user_key().ToString().c_str(),files[i]->largest.user_key().ToString().c_str());
-      }
+
 
       if(files.size()>=2){
 
@@ -299,7 +298,7 @@ PartitionNode::MyStatus PartitionIndexLayer::split(PartitionNode *partitionNode,
         }
 
         MemTable *immutable_list=partitionNode->immuPmtable;
-        //std::cout<<"start_key:"<<partitionNode->start_key<<" splitKey:"<<splitKey<<std::endl;
+        //std::cout<<"start_key:"<<partitionNode->start_key<<" splitKey:"<<splitKey<<"endkey:"<<partitionNode->end_key<<"maxseq:"<<max_snapshot<<std::endl;
         //printf("partitionNode->start_key:%d,splitKey:%s\n",partitionNode->start_key,splitKey.c_str());
         PartitionNode *newPartitionNode=new PartitionNode(partitionNode->start_key,splitKey,newMetaNode,versions_,mutex_,background_work_finished_signal_L0_,internal_comparator_,top_queue_,high_queue_,low_queue_,dbImpl_,cfd_);
         if(immutable_list){

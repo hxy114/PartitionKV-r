@@ -947,10 +947,10 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   //  value_size   : varint32 of value.size()
   //  value bytes  : char[value.size()]
   //  checksum     : char[moptions_.protection_bytes_per_key]
-  std::cout<<"insert key:"<<key.ToString()<<std::endl;
+  //std::cout<<"insert key:"<<key.ToString()<<std::endl;
   //std::cout<<"insert value:"<<value.ToString()<<std::endl;
-  std::cout<<"insert seq:"<<s<<std::endl;
-  std::cout<<"insert type:"<<type<<std::endl;
+  //std::cout<<"insert seq:"<<s<<std::endl;
+  //std::cout<<"insert type:"<<type<<std::endl;
   uint32_t key_size = static_cast<uint32_t>(key.size());
   uint32_t val_size = static_cast<uint32_t>(value.size());
   uint32_t internal_key_size = key_size + 8;
@@ -968,8 +968,8 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
   //printf("buf1:%p \n", buf1);
   //uint64_t a = reinterpret_cast<uint64_t >(buf1);
   buf =  reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));
-  printf("buf1:%p, handle:%p \n",buf1,handle);
-  printf("buf:%p \n", buf);
+  //printf("buf1:%p, handle:%p \n",buf1,handle);
+  //printf("buf:%p \n", buf);
   char* p = EncodeVarint32(buf, internal_key_size);
   memcpy(p, key.data(), key_size);
   Slice key_slice(p, key_size);
@@ -1006,12 +1006,6 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
         return Status::TryAgain("key+seq exists");
       }
     } else {
-      if(min_key_.empty()||comparator_.comparator.user_comparator()->Compare(min_key_,key)>0){
-        min_key_=key.ToString();
-      }
-      if(max_key_.empty()||comparator_.comparator.user_comparator()->Compare(max_key_,key)<0){
-        max_key_=key.ToString();
-      }
       bool res = table->InsertKey(handle);
       if (UNLIKELY(!res)) {
         return Status::TryAgain("key+seq exists");
@@ -1122,14 +1116,20 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     }
     is_range_del_table_empty_.store(false, std::memory_order_relaxed);
   }
+  if(min_key_.empty()||comparator_.comparator.user_comparator()->Compare(min_key_,key)>0){
+    min_key_=key.ToString();
+  }
+  if(max_key_.empty()||comparator_.comparator.user_comparator()->Compare(max_key_,key)<0){
+    max_key_=key.ToString();
+  }
   UpdateOldestKeyTime();
   const char*  k=reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));;
   ParsedInternalKey result;
   ParseInternalKey({k + VarintLength(internal_key_size),internal_key_size},&result,false);
   //std::cout<<"right"<<(k==key)<<std::endl;
-  std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
-  std::cout<<"inserted seq:"<<result.sequence<<std::endl;
-  std::cout<<"inserted type:"<<result.type<<std::endl;
+  //std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
+  //std::cout<<"inserted seq:"<<result.sequence<<std::endl;
+  //std::cout<<"inserted type:"<<result.type<<std::endl;
   TEST_SYNC_POINT_CALLBACK("MemTable::Add:BeforeReturn:Encoded", &encoded);
   return Status::OK();
 }

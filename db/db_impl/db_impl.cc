@@ -2009,6 +2009,63 @@ struct SuperVersionHandle {
   bool background_purge;
 };
 
+struct SuperVersionHandleL0 {
+  // `_super_version` must be non-nullptr and `Ref()`'d once as long as the
+  // `SuperVersionHandle` may use it.
+  SuperVersionHandleL0(DBImpl* _db, InstrumentedMutex* _mu,
+                     Version* _super_version, std::vector<MemTable*>&_table,bool _background_purge)
+      : db(_db),
+        mu(_mu),
+        version(_super_version),
+        table(_table),
+        background_purge(_background_purge) {}
+
+  DBImpl* db;
+  InstrumentedMutex* mu;
+  Version* version;
+  std::vector<MemTable *> table;
+  bool background_purge;
+};
+static void CleanupSuperVersionHandleL0(void* arg1, void* /*arg2*/) {
+  SuperVersionHandleL0* state = static_cast<SuperVersionHandleL0*>(arg1);
+
+  state->mu->Lock();
+  for(size_t i=0;i<state->table.size();i++){
+    state->table[i]->Unref();
+  }
+  state->version->Unref();
+  state->mu->Unlock();
+  delete state;
+
+
+  /*if (sv_handle->super_version->Unref()) {
+    // Job id == 0 means that this is not our background process, but rather
+    // user thread
+    JobContext job_context(0);
+
+    sv_handle->mu->Lock();
+    sv_handle->super_version->Cleanup();
+    sv_handle->db->FindObsoleteFiles(&job_context, false, true);
+    if (sv_handle->background_purge) {
+      sv_handle->db->ScheduleBgLogWriterClose(&job_context);
+      sv_handle->db->AddSuperVersionsToFreeQueue(sv_handle->super_version);
+      sv_handle->db->SchedulePurge();
+    }
+    sv_handle->mu->Unlock();
+
+    if (!sv_handle->background_purge) {
+      delete sv_handle->super_version;
+    }
+    if (job_context.HaveSomethingToDelete()) {
+      sv_handle->db->PurgeObsoleteFiles(job_context,
+                                        sv_handle->background_purge);
+    }
+    job_context.Clean();
+  }
+
+  delete sv_handle;*/
+}
+
 static void CleanupSuperVersionHandle(void* arg1, void* /*arg2*/) {
   SuperVersionHandle* sv_handle = static_cast<SuperVersionHandle*>(arg1);
 
@@ -2046,13 +2103,150 @@ struct GetMergeOperandsState {
   SuperVersionHandle* sv_handle;
 };
 
-static void CleanupGetMergeOperandsState(void* arg1, void* /*arg2*/) {
+__attribute__((unused)) static void CleanupGetMergeOperandsState(void* arg1, void* /*arg2*/) {
   GetMergeOperandsState* state = static_cast<GetMergeOperandsState*>(arg1);
   CleanupSuperVersionHandle(state->sv_handle /* arg1 */, nullptr /* arg2 */);
   delete state;
 }
 
 }  // namespace
+
+InternalIterator* DBImpl::NewInternalIteratorL0(
+    const ReadOptions& read_options, ColumnFamilyData* cfd,
+    Version* version, Arena* arena, SequenceNumber /*sequence*/,
+    bool allow_unprepared_value, ArenaWrappedDBIter* db_iter) {
+  InternalIterator* internal_iter;
+  assert(arena != nullptr);
+  // Need to create internal iterator from the arena.
+  MergeIteratorBuilder merge_iter_builder(
+      &cfd->internal_comparator(), arena,
+      !read_options.total_order_seek &&
+          version->mutable_cf_options_.prefix_extractor != nullptr,
+      read_options.iterate_upper_bound);
+
+
+  std::vector<InternalIterator*> list;
+  std::vector<MemTable*>table_list;
+  auto bmap=cfd->partitionIndexLayer_->get_bmap();
+  for(auto iter=bmap->begin();iter!=bmap->end();iter++){
+    auto partionNode=iter->second;
+    auto pmtable=partionNode->pmtable;
+    auto immupmtable_list=partionNode->immuPmtable;
+    auto otherpmtable_list=partionNode->other_immuPmtable;
+    if(pmtable){
+      list.push_back(pmtable->NewIterator(read_options, nullptr, arena));
+      table_list.push_back(pmtable);
+      pmtable->Ref();
+      merge_iter_builder.AddIterator(list.back());
+    }
+    while(immupmtable_list!= nullptr){
+      list.push_back(immupmtable_list->NewIterator(read_options, nullptr, arena));
+      table_list.push_back(immupmtable_list);
+      immupmtable_list->Ref();
+      immupmtable_list=immupmtable_list->next_;
+      merge_iter_builder.AddIterator(list.back());
+    }
+
+    while(otherpmtable_list!= nullptr){
+      list.push_back(otherpmtable_list->NewIterator(read_options, nullptr, arena));
+      table_list.push_back(otherpmtable_list);
+      otherpmtable_list->Ref();
+      otherpmtable_list=otherpmtable_list->next_;
+      merge_iter_builder.AddIterator(list.back());
+    }
+  }
+  version->AddIterators(read_options, file_options_,
+                        &merge_iter_builder,
+                        allow_unprepared_value);
+
+  internal_iter = merge_iter_builder.Finish(
+      read_options.ignore_range_deletions ? nullptr : db_iter);
+  SuperVersionHandleL0* cleanup = new SuperVersionHandleL0(
+      this, &mutex_, version,table_list,
+      read_options.background_purge_on_iterator_cleanup ||
+          immutable_db_options_.avoid_unnecessary_blocking_io);
+  internal_iter->RegisterCleanup(CleanupSuperVersionHandleL0, cleanup, nullptr);
+
+  return internal_iter;
+
+
+  /*versions_->current()->AddIterators(options, &list);
+  Iterator* internal_iter =
+      NewMergingIterator(&internal_comparator_, &list[0], list.size());
+  versions_->current()->Ref();
+
+  IterStateL0* cleanup = new IterStateL0(&mutex_, table_list, versions_->current());
+  internal_iter->RegisterCleanup(CleanupIteratorStateL0, cleanup, nullptr);
+
+  *seed = ++seed_;
+  mutex_.Unlock();
+  return internal_iter;*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // Collect iterator for mutable memtable
+  /*auto mem_iter = version->mem->NewIterator(
+      read_options, version->GetSeqnoToTimeMapping(), arena);
+  Status s;
+  if (!read_options.ignore_range_deletions) {
+    std::unique_ptr<TruncatedRangeDelIterator> mem_tombstone_iter;
+    auto range_del_iter = super_version->mem->NewRangeTombstoneIterator(
+        read_options, sequence, false *//* immutable_memtable *//*);
+    if (range_del_iter == nullptr || range_del_iter->empty()) {
+      delete range_del_iter;
+    } else {
+      mem_tombstone_iter = std::make_unique<TruncatedRangeDelIterator>(
+          std::unique_ptr<FragmentedRangeTombstoneIterator>(range_del_iter),
+          &cfd->ioptions()->internal_comparator, nullptr *//* smallest *//*,
+          nullptr *//* largest *//*);
+    }
+    merge_iter_builder.AddPointAndTombstoneIterator(
+        mem_iter, std::move(mem_tombstone_iter));
+  } else {
+    merge_iter_builder.AddIterator(mem_iter);
+  }
+
+  // Collect all needed child iterators for immutable memtables
+  if (s.ok()) {
+    super_version->imm->AddIterators(
+        read_options, super_version->GetSeqnoToTimeMapping(),
+        &merge_iter_builder, !read_options.ignore_range_deletions);
+  }
+  TEST_SYNC_POINT_CALLBACK("DBImpl::NewInternalIterator:StatusCallback", &s);
+  if (s.ok()) {
+    // Collect iterators for files in L0 - Ln
+    if (read_options.read_tier != kMemtableTier) {
+      version->AddIterators(read_options, file_options_,
+                                           &merge_iter_builder,
+                                           allow_unprepared_value);
+    }
+    internal_iter = merge_iter_builder.Finish(
+        read_options.ignore_range_deletions ? nullptr : db_iter);
+    SuperVersionHandleL0* cleanup = new SuperVersionHandleL0(
+        this, &mutex_, version,
+        read_options.background_purge_on_iterator_cleanup ||
+            immutable_db_options_.avoid_unnecessary_blocking_io);
+    internal_iter->RegisterCleanup(CleanupSuperVersionHandleL0, cleanup, nullptr);
+
+    return internal_iter;
+  } else {
+    CleanupSuperVersion(super_version);
+  }
+  return NewErrorInternalIterator<Slice>(s, arena);*/
+}
 
 InternalIterator* DBImpl::NewInternalIterator(
     const ReadOptions& read_options, ColumnFamilyData* cfd,
@@ -2294,6 +2488,22 @@ bool DBImpl::ShouldReferenceSuperVersion(const MergeContext& merge_context) {
              merge_context.GetOperands().size();
 }
 
+bool DBImpl::Get(std::vector<MemTable*>&list,const LookupKey& key, std::string* value,
+                 PinnableWideColumns* columns, std::string* timestamp, Status* s,
+                 MergeContext* merge_context,
+                 SequenceNumber* max_covering_tombstone_seq,
+                 const ReadOptions& read_opts, bool immutable_memtable,
+                 ReadCallback* callback , bool* is_blob_index ,
+                 bool do_merge ){
+  for(int i=list.size()-1;i>=0;i--){
+    if(list[i]->Get(key,value,columns,timestamp,s,merge_context,
+                     max_covering_tombstone_seq,read_opts,
+                     immutable_memtable,callback,is_blob_index,do_merge)){
+      return true;
+    }
+  }
+  return false;
+}
 Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
                        GetImplOptions& get_impl_options) {
   assert(get_impl_options.value != nullptr ||
@@ -2350,7 +2560,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   }
 
   // Acquire SuperVersion
-  SuperVersion* sv = GetAndRefSuperVersion(cfd);
+ /* SuperVersion* sv = GetAndRefSuperVersion(cfd);
   if (read_options.timestamp && read_options.timestamp->size() > 0) {
     const Status s =
         FailIfReadCollapsedHistory(cfd, sv, *(read_options.timestamp));
@@ -2358,8 +2568,29 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
       ReturnAndCleanupSuperVersion(cfd, sv);
       return s;
     }
+  }*/
+  mutex_.Lock();
+  PartitionNode *partitionNode=cfd->partitionIndexLayer_->seek_partition(key.ToString());
+  MemTable *mem=partitionNode->pmtable,*imm=partitionNode->immuPmtable,*other=partitionNode->other_immuPmtable;
+  std::vector<MemTable*>immu_list,other_list;
+
+  Version* current = versions_->column_family_set_->GetDefault()->current();
+  if(mem){
+    mem->Ref();
   }
 
+  while(imm!= nullptr){
+    imm->Ref();
+    immu_list.push_back(imm);
+    imm=imm->next_;
+  }
+  while(other!= nullptr){
+    other->Ref();
+    other_list.push_back(other);
+    other=other->next_;
+  }
+  current->Ref();
+  mutex_.Unlock();
   TEST_SYNC_POINT_CALLBACK("DBImpl::GetImpl:AfterAcquireSv", nullptr);
   TEST_SYNC_POINT("DBImpl::GetImpl:1");
   TEST_SYNC_POINT("DBImpl::GetImpl:2");
@@ -2435,13 +2666,60 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   if (!skip_memtable) {
     // Get value associated with key
     if (get_impl_options.get_value) {
-      if (sv->mem->Get(
+
+      if (mem!= nullptr&&mem->Get(lkey,
+                                     get_impl_options.value ? get_impl_options.value->GetSelf()
+                                                            : nullptr,
+                                     get_impl_options.columns, timestamp, &s, &merge_context,
+                                     &max_covering_tombstone_seq, read_options,
+                                     false /* immutable_memtable */, get_impl_options.callback,
+                                         get_impl_options.is_blob_index)) {
+        done = true;
+
+        if (get_impl_options.value) {
+          get_impl_options.value->PinSelf();
+        }
+
+        RecordTick(stats_, MEMTABLE_HIT);
+        // Done
+      } else if (!other_list.empty() && Get(immu_list,lkey,
+                                            get_impl_options.value ? get_impl_options.value->GetSelf()
+                                                                   : nullptr,
+                                            get_impl_options.columns, timestamp, &s, &merge_context,
+                                            &max_covering_tombstone_seq, read_options,
+                                            false /* immutable_memtable */, get_impl_options.callback,
+                                                get_impl_options.is_blob_index)) {
+        done = true;
+
+        if (get_impl_options.value) {
+          get_impl_options.value->PinSelf();
+        }
+
+        RecordTick(stats_, MEMTABLE_HIT);
+        // Done
+      } else if(!immu_list.empty()  &&Get(other_list,lkey,
+                                           get_impl_options.value ? get_impl_options.value->GetSelf()
+                                                                  : nullptr,
+                                           get_impl_options.columns, timestamp, &s, &merge_context,
+                                           &max_covering_tombstone_seq, read_options,
+                                           false /* immutable_memtable */, get_impl_options.callback,
+                                               get_impl_options.is_blob_index)){
+        done = true;
+
+        if (get_impl_options.value) {
+          get_impl_options.value->PinSelf();
+        }
+
+        RecordTick(stats_, MEMTABLE_HIT);
+        // Done
+      }
+      /*if (sv->mem->Get(
               lkey,
               get_impl_options.value ? get_impl_options.value->GetSelf()
                                      : nullptr,
               get_impl_options.columns, timestamp, &s, &merge_context,
               &max_covering_tombstone_seq, read_options,
-              false /* immutable_memtable */, get_impl_options.callback,
+              false *//* immutable_memtable *//*, get_impl_options.callback,
               get_impl_options.is_blob_index)) {
         done = true;
 
@@ -2466,14 +2744,14 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         }
 
         RecordTick(stats_, MEMTABLE_HIT);
-      }
-    } else {
+      }*/
+    } /*else {
       // Get Merge Operands associated with key, Merge Operands should not be
       // merged and raw values should be returned to the user.
-      if (sv->mem->Get(lkey, /*value=*/nullptr, /*columns=*/nullptr,
-                       /*timestamp=*/nullptr, &s, &merge_context,
+      if (sv->mem->Get(lkey, *//*value=*//*nullptr, *//*columns=*//*nullptr,
+                       *//*timestamp=*//*nullptr, &s, &merge_context,
                        &max_covering_tombstone_seq, read_options,
-                       false /* immutable_memtable */, nullptr, nullptr,
+                       false *//* immutable_memtable *//*, nullptr, nullptr,
                        false)) {
         done = true;
         RecordTick(stats_, MEMTABLE_HIT);
@@ -2484,19 +2762,19 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         done = true;
         RecordTick(stats_, MEMTABLE_HIT);
       }
-    }
-    if (!s.ok() && !s.IsMergeInProgress() && !s.IsNotFound()) {
+    }*/
+    /*if (!s.ok() && !s.IsMergeInProgress() && !s.IsNotFound()) {
       assert(done);
       ReturnAndCleanupSuperVersion(cfd, sv);
       return s;
-    }
+    }*/
   }
   TEST_SYNC_POINT("DBImpl::GetImpl:PostMemTableGet:0");
   TEST_SYNC_POINT("DBImpl::GetImpl:PostMemTableGet:1");
   PinnedIteratorsManager pinned_iters_mgr;
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
-    sv->current->Get(
+    current->Get(
         read_options, lkey, get_impl_options.value, get_impl_options.columns,
         timestamp, &s, &merge_context, &max_covering_tombstone_seq,
         &pinned_iters_mgr,
@@ -2526,7 +2804,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         } else if (get_impl_options.columns) {
           size = get_impl_options.columns->serialized_size();
         }
-      } else {
+      } /*else {
         // Return all merge operands for get_impl_options.key
         *get_impl_options.number_of_operands =
             static_cast<int>(merge_context.GetNumOperands());
@@ -2564,15 +2842,15 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
             shared_cleanable.Allocate();
             shared_cleanable->RegisterCleanup(CleanupGetMergeOperandsState,
-                                              state /* arg1 */,
-                                              nullptr /* arg2 */);
+                                              state *//* arg1 *//*,
+                                              nullptr *//* arg2 *//*);
             for (size_t i = 0; i < state->merge_context.GetOperands().size();
                  ++i) {
               const Slice& sl = state->merge_context.GetOperands()[i];
               size += sl.size();
 
               get_impl_options.merge_operands->PinSlice(
-                  sl, nullptr /* cleanable */);
+                  sl, nullptr *//* cleanable *//*);
               if (i == state->merge_context.GetOperands().size() - 1) {
                 shared_cleanable.MoveAsCleanupTo(
                     get_impl_options.merge_operands);
@@ -2590,13 +2868,24 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
             }
           }
         }
-      }
+      }*/
       RecordTick(stats_, BYTES_READ, size);
       PERF_COUNTER_ADD(get_read_bytes, size);
     }
+    mutex_.Lock();
+    //ReturnAndCleanupSuperVersion(cfd, sv);
+    mem->Unref();
 
-    ReturnAndCleanupSuperVersion(cfd, sv);
+    for(size_t i=0;i<other_list.size();i++){
+      other_list[i]->Unref();
+    }
 
+    for(size_t i=0;i<immu_list.size();i++){
+      immu_list[i]->Unref();
+    }
+
+    current->Unref();
+    mutex_.Unlock();
     RecordInHistogram(stats_, BYTES_PER_READ, size);
   }
   return s;
@@ -3830,34 +4119,115 @@ Iterator* DBImpl::NewIterator(const ReadOptions& _read_options,
   assert(cfh != nullptr);
   ColumnFamilyData* cfd = cfh->cfd();
   assert(cfd != nullptr);
-  SuperVersion* sv = cfd->GetReferencedSuperVersion(this);
-  if (read_options.timestamp && read_options.timestamp->size() > 0) {
+  mutex_.Lock();
+  Version * current = cfd->current();
+  current->Ref();
+  //SuperVersion* sv = cfd->GetReferencedSuperVersion(this);
+  /*if (read_options.timestamp && read_options.timestamp->size() > 0) {
     const Status s =
         FailIfReadCollapsedHistory(cfd, sv, *(read_options.timestamp));
     if (!s.ok()) {
       CleanupSuperVersion(sv);
       return NewErrorIterator(s);
     }
-  }
-  if (read_options.tailing) {
+  }*/
+  /*if (read_options.tailing) {
     auto iter = new ForwardIterator(this, read_options, cfd, sv,
-                                    /* allow_unprepared_value */ true);
+                                    *//* allow_unprepared_value *//* true);
     result = NewDBIterator(
         env_, read_options, *cfd->ioptions(), sv->mutable_cf_options,
         cfd->user_comparator(), iter, sv->current, kMaxSequenceNumber,
         sv->mutable_cf_options.max_sequential_skip_in_iterations,
-        nullptr /* read_callback */, cfh);
-  } else {
+        nullptr *//* read_callback *//*, cfh);
+  } else {*/
     // Note: no need to consider the special case of
     // last_seq_same_as_publish_seq_==false since NewIterator is overridden in
     // WritePreparedTxnDB
-    result = NewIteratorImpl(read_options, cfh, sv,
+    result = NewIteratorImplL0(read_options, cfh, current,
                              (read_options.snapshot != nullptr)
                                  ? read_options.snapshot->GetSequenceNumber()
                                  : kMaxSequenceNumber,
                              nullptr /* read_callback */);
-  }
+  //}
+  mutex_.Unlock();
   return result;
+}
+
+ArenaWrappedDBIter* DBImpl::NewIteratorImplL0(
+    const ReadOptions& read_options, ColumnFamilyHandleImpl* cfh,
+    Version* sv, SequenceNumber snapshot, ReadCallback* read_callback,
+    bool expose_blob_index, bool allow_refresh) {
+  TEST_SYNC_POINT("DBImpl::NewIterator:1");
+  TEST_SYNC_POINT("DBImpl::NewIterator:2");
+
+  if (snapshot == kMaxSequenceNumber) {
+    // Note that the snapshot is assigned AFTER referencing the super
+    // version because otherwise a flush happening in between may compact away
+    // data for the snapshot, so the reader would see neither data that was be
+    // visible to the snapshot before compaction nor the newer data inserted
+    // afterwards.
+    // Note that the super version might not contain all the data available
+    // to this snapshot, but in that case it can see all the data in the
+    // super version, which is a valid consistent state after the user
+    // calls NewIterator().
+    snapshot = versions_->LastSequence();
+    TEST_SYNC_POINT("DBImpl::NewIterator:3");
+    TEST_SYNC_POINT("DBImpl::NewIterator:4");
+  }
+
+  // Try to generate a DB iterator tree in continuous memory area to be
+  // cache friendly. Here is an example of result:
+  // +-------------------------------+
+  // |                               |
+  // | ArenaWrappedDBIter            |
+  // |  +                            |
+  // |  +---> Inner Iterator   ------------+
+  // |  |                            |     |
+  // |  |    +-- -- -- -- -- -- -- --+     |
+  // |  +--- | Arena                 |     |
+  // |       |                       |     |
+  // |          Allocated Memory:    |     |
+  // |       |   +-------------------+     |
+  // |       |   | DBIter            | <---+
+  // |           |  +                |
+  // |       |   |  +-> iter_  ------------+
+  // |       |   |                   |     |
+  // |       |   +-------------------+     |
+  // |       |   | MergingIterator   | <---+
+  // |           |  +                |
+  // |       |   |  +->child iter1  ------------+
+  // |       |   |  |                |          |
+  // |           |  +->child iter2  ----------+ |
+  // |       |   |  |                |        | |
+  // |       |   |  +->child iter3  --------+ | |
+  // |           |                   |      | | |
+  // |       |   +-------------------+      | | |
+  // |       |   | Iterator1         | <--------+
+  // |       |   +-------------------+      | |
+  // |       |   | Iterator2         | <------+
+  // |       |   +-------------------+      |
+  // |       |   | Iterator3         | <----+
+  // |       |   +-------------------+
+  // |       |                       |
+  // +-------+-----------------------+
+  //
+  // ArenaWrappedDBIter inlines an arena area where all the iterators in
+  // the iterator tree are allocated in the order of being accessed when
+  // querying.
+  // Laying out the iterators in the order of being accessed makes it more
+  // likely that any iterator pointer is close to the iterator it points to so
+  // that they are likely to be in the same cache line and/or page.
+  ArenaWrappedDBIter* db_iter = NewArenaWrappedDbIterator(
+      env_, read_options, *cfh->cfd()->ioptions(), sv->mutable_cf_options_,sv, snapshot,
+      sv->mutable_cf_options_.max_sequential_skip_in_iterations,
+      sv->version_number_, read_callback, cfh, expose_blob_index, allow_refresh);
+
+  InternalIterator* internal_iter = NewInternalIteratorL0(
+      db_iter->GetReadOptions(), cfh->cfd(), sv, db_iter->GetArena(), snapshot,
+      /* allow_unprepared_value */ true, db_iter);
+  db_iter->SetIterUnderDBIter(internal_iter);
+
+  return db_iter;
 }
 
 ArenaWrappedDBIter* DBImpl::NewIteratorImpl(

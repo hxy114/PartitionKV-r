@@ -4317,6 +4317,10 @@ size_t VersionStorageInfo::GetOverlappingSize(int level, const InternalKey* begi
                                    const InternalKey* end){
   assert(level >= 0);
   assert(level < num_levels_);
+  if (level >= num_non_empty_levels_) {
+    // this level is empty, no overlapping inputs
+    return 0;
+  }
   Slice user_begin, user_end;
   if (begin != nullptr) {
     user_begin = begin->user_key();
@@ -4396,7 +4400,7 @@ void VersionStorageInfo::GetOverlappingInputs(
 
 
   InternalKey begin1(begin,kMaxSequenceNumber,kTypeValue);
-  InternalKey end1(end,kMaxSequenceNumber,kTypeValue);
+  InternalKey end1(end,0,kTypeValue);
 
   if (level > 0) {
     GetOverlappingInputsRangeBinarySearch(level, &begin1, &end1, inputs, 0,
@@ -4559,9 +4563,6 @@ void VersionStorageInfo::GetOverlappingInputsRangeBinarySearch(
     std::vector<FileMetaData*>* inputs, int hint_index, int* file_index,
     bool within_interval, InternalKey** next_smallest) const {
   assert(level > 0);
-  for(size_t i = 0;i<level_files_brief_[level].num_files;i++) {
-    printf("lapping file %zu,start:%s, end:%s,\n",i,level_files_brief_[level].files[i].smallest_key.ToString().c_str(),level_files_brief_[level].files[i].largest_key.ToString().c_str());
-  }
 
   auto user_cmp = user_comparator_;
   const FdWithKeyRange* files = level_files_brief_[level].files;
@@ -7289,7 +7290,7 @@ InternalIterator* VersionSet::MakeInputIteratorL0(
   // Level-0 files have to be merged together.  For other levels,
   // we will make a concatenating iterator per level.
   // TODO(opt): use concatenating iterator for level-0 if there is no overlap
-  const size_t space = c->memtable_size() + 1;
+  const size_t space = c->memtable_size() + c->num_input_levels() -1;
   /*const size_t space = (c->level() == 0 ? c->input_levels(0)->num_files +
                                           c->num_input_levels() - 1
                                         : c->num_input_levels());*/
@@ -7305,8 +7306,8 @@ InternalIterator* VersionSet::MakeInputIteratorL0(
   size_t num = 0;
   MemTable * m=c->input_memtable();
   for (size_t i = 0; i <c->memtable_size();i++) {
-    std::unique_ptr<TruncatedRangeDelIterator> range_tombstone_iter =
-        nullptr;
+    /*std::unique_ptr<TruncatedRangeDelIterator> range_tombstone_iter =
+        nullptr;*/
     list[num++] =m->NewIterator(read_options, /*seqno_to_time_mapping=*/nullptr);
     range_tombstones.emplace_back(nullptr,
                                   nullptr);
