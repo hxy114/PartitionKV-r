@@ -286,6 +286,16 @@ class VersionStorageInfo {
       int* file_index = nullptr)  // return index of overlap file
       const;
 
+  size_t GetOverlappingSizeRangeBinarySearch(
+      int level,                 // level > 0
+      const InternalKey* begin,  // nullptr means before all keys
+      const InternalKey* end,    // nullptr means after all keys
+      int hint_index,                // index of overlap file
+      int* file_index,               // return index of overlap file
+      bool within_interval = false,  // if set, force the inputs within interval
+      InternalKey** next_smallest = nullptr)  // if non-null, returns the
+      const;  // smallest key of next file not included
+
   void GetOverlappingInputsRangeBinarySearch(
       int level,                 // level > 0
       const InternalKey* begin,  // nullptr means before all keys
