@@ -9,7 +9,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "db/compaction/compactionl0_outputs.h"
-
+#include "db/vlog_writer.h"
 #include "db/builder.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -357,7 +357,9 @@ bool CompactionL0Outputs::ShouldStopBefore(const CompactionL0Iterator& c_iter) {
 Status CompactionL0Outputs::AddToOutput(
     const CompactionL0Iterator& c_iter,
     const CompactionL0FileOpenFunc& open_file_func,
-    const CompactionL0FileCloseFunc& close_file_func) {
+    const CompactionL0FileCloseFunc& close_file_func,
+    const CompactionL0LogFileOpenFunc &open_log_file_func,
+    const CompactionL0LogFileCloseFunc &close_log_file_func) {
   Status s;
   bool is_range_del = c_iter.IsDeleteRangeSentinelKey();
   if (is_range_del && compaction_->bottommost_level()) {
@@ -384,6 +386,9 @@ Status CompactionL0Outputs::AddToOutput(
       range_tombstone_lower_bound_.Clear();
     }
   }
+  if (HasBuilder()&&vWriter_->FileSize() >=67108864ULL) {
+    close_log_file_func(*this);
+  }
 
   // Open output file if necessary
   if (!HasBuilder()) {
@@ -392,6 +397,14 @@ Status CompactionL0Outputs::AddToOutput(
       return s;
     }
   }
+
+  if(!HasVwriter()) {
+    s = open_log_file_func(*this);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
 
   // c_iter may emit range deletion keys, so update `last_key_for_partitioner_`
   // here before returning below when `is_range_del` is true
@@ -405,12 +418,33 @@ Status CompactionL0Outputs::AddToOutput(
   }
 
   assert(builder_ != nullptr);
+  assert(vWriter_ != nullptr);
   const Slice& value = c_iter.value();
   s = current_output().validator.Add(key, value);
   if (!s.ok()) {
     return s;
   }
-  builder_->Add(key, value);
+  const ParsedInternalKey& ikey = c_iter.ikey();
+  if(ikey.type==kTypeValue){
+    std::string rep;
+    rep.push_back(static_cast<char>(kTypeValue));
+    PutLengthPrefixedSlice(&rep, ikey.user_key);
+    PutLengthPrefixedSlice(&rep, value);
+    uint64_t addr= vWriter_->AddRecord(rep);
+    std::string address;
+    size_t size=rep.size();
+    //assert(size==4116);
+    //assert(addr%4116==0);
+    PutVarint64(&address, vlog_number_);
+    PutVarint64(&address, addr);
+    PutVarint64(&address, size);
+    builder_->Add(key,address);
+  }else{
+    builder_->Add(key, value);
+  }
+
+
+  //builder_->Add(key, value);
 
   stats_.num_output_records++;
   current_output_file_size_ = builder_->EstimatedFileSize();
@@ -423,7 +457,7 @@ Status CompactionL0Outputs::AddToOutput(
     return s;
   }
 
-  const ParsedInternalKey& ikey = c_iter.ikey();
+
   if (ikey.type == kTypeValuePreferredSeqno) {
     SequenceNumber preferred_seqno = ParsePackedValueForSeqno(value);
     smallest_preferred_seqno_ =
@@ -789,7 +823,7 @@ void CompactionL0Outputs::FillFilesToCutForTtl() {
 
 CompactionL0Outputs::CompactionL0Outputs(const CompactionL0* compaction,
                                      const bool is_penultimate_level)
-    : compaction_(compaction), is_penultimate_level_(is_penultimate_level) {
+    : compaction_(compaction), vWriter_(nullptr), is_penultimate_level_(is_penultimate_level) {
   partitioner_ = compaction->output_level() == 0
                      ? nullptr
                      : compaction->CreateSstPartitioner();

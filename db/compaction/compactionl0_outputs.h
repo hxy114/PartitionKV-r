@@ -20,6 +20,8 @@ namespace ROCKSDB_NAMESPACE {
 
 class CompactionL0Outputs;
 using CompactionL0FileOpenFunc = std::function<Status(CompactionL0Outputs&)>;
+using CompactionL0LogFileOpenFunc = std::function<Status(CompactionL0Outputs&)>;
+using CompactionL0LogFileCloseFunc = std::function<Status(CompactionL0Outputs&)>;
 using CompactionL0FileCloseFunc =
     std::function<Status(CompactionL0Outputs&, const Status&, const Slice&)>;
 
@@ -27,6 +29,7 @@ using CompactionL0FileCloseFunc =
 // compaction_job Open/Close compaction file functions.
 class CompactionL0Outputs {
  public:
+  friend class CompactionL0Job;
   // compaction output file
   struct OutputL0 {
     OutputL0(FileMetaData&& _meta, const InternalKeyComparator& _icmp,
@@ -153,7 +156,7 @@ class CompactionL0Outputs {
   }
 
   bool HasBuilder() const { return builder_ != nullptr; }
-
+  bool HasVwriter() const {return vWriter_ != nullptr;}
   FileMetaData* GetMetaData() { return &current_output().meta; }
 
   bool HasOutput() const { return !outputs_.empty(); }
@@ -242,18 +245,20 @@ class CompactionL0Outputs {
   // used for calculating the first key's overlap.
   uint64_t GetCurrentKeyGrandparentOverlappedBytes(
       const Slice& internal_key) const;
-
-  // Add current key from compaction_iterator to the output file. If needed
+      // Add current key from compaction_iterator to the output file. If needed
   // close and open new compaction output with the functions provided.
   Status AddToOutput(const CompactionL0Iterator& c_iter,
                      const CompactionL0FileOpenFunc& open_file_func,
-                     const CompactionL0FileCloseFunc& close_file_func);
+                     const CompactionL0FileCloseFunc& close_file_func,
+                     const CompactionL0LogFileOpenFunc &open_log_file_func,
+                     const CompactionL0LogFileCloseFunc &close_log_file_func);
 
   // Close the current output. `open_file_func` is needed for creating new file
   // for range-dels only output file.
   Status CloseOutput(const Status& curr_status,
                      const CompactionL0FileOpenFunc& open_file_func,
-                     const CompactionL0FileCloseFunc& close_file_func) {
+                     const CompactionL0FileCloseFunc& close_file_func,
+                     const CompactionL0LogFileCloseFunc &close_log_file_func) {
     Status status = curr_status;
     // handle subcompaction containing only range deletions
     if (status.ok() && !HasBuilder() && !HasOutput() && HasRangeDel()) {
@@ -265,6 +270,9 @@ class CompactionL0Outputs {
       if (!s.ok() && status.ok()) {
         status = s;
       }
+    }
+    if(HasVwriter()) {
+      status = close_log_file_func(*this);
     }
 
     return status;
@@ -295,6 +303,8 @@ class CompactionL0Outputs {
 
   // current output builder and writer
   std::unique_ptr<TableBuilder> builder_;
+  vlog::VWriter * vWriter_;
+  uint64_t vlog_number_;
   std::unique_ptr<WritableFileWriter> file_writer_;
   uint64_t current_output_file_size_ = 0;
   SequenceNumber smallest_preferred_seqno_ = kMaxSequenceNumber;

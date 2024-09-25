@@ -73,7 +73,10 @@ static std::string MakeFileName(const std::string& name, uint64_t number,
                                 const char* suffix) {
   return name + "/" + MakeFileName(number, suffix);
 }
-
+std::string MyLogFileName(const std::string& name, uint64_t number) {
+  assert(number > 0);
+  return MakeFileName(name, number, "mylog");
+}
 std::string LogFileName(const std::string& name, uint64_t number) {
   assert(number > 0);
   return MakeFileName(name, number, "log");
@@ -137,6 +140,17 @@ uint64_t TableFileNameToNumber(const std::string& name) {
   return number;
 }
 
+std::string MyLogFileName(const std::vector<DbPath>& db_paths, uint64_t number,
+                          uint32_t path_id) {
+  assert(number > 0);
+  std::string path;
+  if (path_id >= db_paths.size()) {
+    path = db_paths.back().path;
+  } else {
+    path = db_paths[path_id].path;
+  }
+  return MyLogFileName(path, number);
+}
 std::string TableFileName(const std::vector<DbPath>& db_paths, uint64_t number,
                           uint32_t path_id) {
   assert(number > 0);
@@ -378,6 +392,8 @@ bool ParseFileName(const std::string& fname, uint64_t* number,
       *type = kBlobFile;
     } else if (suffix == Slice(kTempFileNameSuffix)) {
       *type = kTempFile;
+    } else if(suffix == Slice("mylog")) {
+      *type = kMyLogFile;
     } else {
       return false;
     }

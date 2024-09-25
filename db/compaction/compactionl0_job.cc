@@ -56,6 +56,7 @@
 #include "table/unique_id_impl.h"
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
+#include "db/vlog_writer.h"
 
 namespace ROCKSDB_NAMESPACE {
 extern const char* GetCompactionReasonString(CompactionReason compaction_reason);
@@ -1315,7 +1316,14 @@ void CompactionL0Job::ProcessKeyValueCompaction(SubcompactionL0State* sub_compac
           [this, sub_compact](CompactionL0Outputs& outputs) {
               return this->OpenCompactionOutputFile(sub_compact, outputs);
           };
-
+  const CompactionL0FileOpenFunc open_log_file_func =
+      [this, sub_compact](CompactionL0Outputs& outputs) {
+        return this->OpenCompactionOutputLogFile(sub_compact, outputs);
+      };
+  const CompactionL0LogFileCloseFunc close_log_file_func =
+      [this, sub_compact](CompactionL0Outputs& outputs) {
+        return this->FinishCompactionOutputLogFile(sub_compact, outputs);
+      };
   const CompactionL0FileCloseFunc close_file_func =
           [this, sub_compact, start_user_key, end_user_key](
                   CompactionL0Outputs& outputs, const Status& status,
@@ -1325,6 +1333,7 @@ void CompactionL0Job::ProcessKeyValueCompaction(SubcompactionL0State* sub_compac
                       sub_compact->start.has_value() ? &start_user_key : nullptr,
                       sub_compact->end.has_value() ? &end_user_key : nullptr);
           };
+
 
   Status status;
   TEST_SYNC_POINT_CALLBACK(
@@ -1355,7 +1364,7 @@ void CompactionL0Job::ProcessKeyValueCompaction(SubcompactionL0State* sub_compac
     // and `close_file_func`.
     // TODO: it would be better to have the compaction file open/close moved
     // into `CompactionOutputs` which has the output file information.
-    status = sub_compact->AddToOutput(*c_iter, open_file_func, close_file_func);
+    status = sub_compact->AddToOutput(*c_iter, open_file_func, close_file_func,open_log_file_func,close_log_file_func);
     if (!status.ok()) {
       break;
     }
@@ -1442,7 +1451,7 @@ void CompactionL0Job::ProcessKeyValueCompaction(SubcompactionL0State* sub_compac
   // only range-dels, no file was opened, to save the range-dels, it need to
   // create a new output file.
   status = sub_compact->CloseCompactionFiles(status, open_file_func,
-                                             close_file_func);
+                                             close_file_func,close_log_file_func);
 
   if (blob_file_builder) {
     if (status.ok()) {
@@ -1536,6 +1545,19 @@ void CompactionL0Job::RecordDroppedKeys(
   }
 }
 
+Status CompactionL0Job::FinishCompactionOutputLogFile(SubcompactionL0State* /*sub_compact*/,
+                                                      CompactionL0Outputs& outputs) {
+
+  //assert(sub_compact != nullptr);
+  assert(outputs.vWriter_ != nullptr);
+  outputs.vWriter_->Close();
+  outputs.vWriter_ = nullptr;
+  outputs.vlog_number_ = -1;
+  // Check for iterator errors
+
+  return Status::OK();
+
+}
 Status CompactionL0Job::FinishCompactionOutputFile(
         const Status& input_status, SubcompactionL0State* sub_compact,
         CompactionL0Outputs& outputs, const Slice& next_table_min_key,
@@ -1900,11 +1922,19 @@ void CompactionL0Job::RecordCompactionIOStats() {
           ThreadStatus::COMPACTION_BYTES_WRITTEN, IOSTATS(bytes_written));
   IOSTATS_RESET(bytes_written);
 }
-
+Status CompactionL0Job::OpenCompactionOutputLogFile(SubcompactionL0State* sub_compact,
+                                                 CompactionL0Outputs& outputs) {
+  assert(sub_compact != nullptr);
+  uint64_t log_file_number = versions_->NewFileNumber();
+  std::string log_fname = GetLogFileName(log_file_number);
+  auto vwrite = sub_compact->compaction->column_family_data()->vlog_manager_.AddVlog(log_fname,sub_compact->compaction->column_family_data()->ioptions() ,log_file_number);
+  outputs.vWriter_ =vwrite;
+  outputs.vlog_number_ = log_file_number;
+  return Status::OK();
+}
 Status CompactionL0Job::OpenCompactionOutputFile(SubcompactionL0State* sub_compact,
                                                CompactionL0Outputs& outputs) {
   assert(sub_compact != nullptr);
-
   // no need to lock because VersionSet::next_file_number_ is atomic
   uint64_t file_number = versions_->NewFileNumber();
   std::string fname = GetTableFileName(file_number);
@@ -2214,6 +2244,10 @@ void CompactionL0Job::LogCompaction() {
 
 std::string CompactionL0Job::GetTableFileName(uint64_t file_number) {
   return TableFileName(compact_->compaction->immutable_options()->cf_paths,
+                       file_number, compact_->compaction->output_path_id());
+}
+std::string CompactionL0Job::GetLogFileName(uint64_t file_number) {
+  return MyLogFileName(compact_->compaction->immutable_options()->cf_paths,
                        file_number, compact_->compaction->output_path_id());
 }
 

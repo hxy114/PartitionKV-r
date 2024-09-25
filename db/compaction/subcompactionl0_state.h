@@ -190,21 +190,24 @@ public:
     // Add compaction_iterator key/value to the `Current` output group.
     Status AddToOutput(const CompactionL0Iterator& iter,
                        const CompactionL0FileOpenFunc& open_file_func,
-                       const CompactionL0FileCloseFunc& close_file_func);
+                       const CompactionL0FileCloseFunc& close_file_func,
+                       const CompactionL0LogFileOpenFunc &open_log_file_func,
+                       const CompactionL0LogFileCloseFunc &close_log_file_func);
 
     // Close all compaction output files, both output_to_penultimate_level outputs
     // and normal outputs.
     Status CloseCompactionFiles(const Status& curr_status,
                                 const CompactionL0FileOpenFunc& open_file_func,
-                                const CompactionL0FileCloseFunc& close_file_func) {
+                                const CompactionL0FileCloseFunc& close_file_func,
+                                const CompactionL0LogFileCloseFunc& close_log_file_func) {
       // Call FinishCompactionOutputFile() even if status is not ok: it needs to
       // close the output file.
       // CloseOutput() may open new compaction output files.
       is_current_penultimate_level_ = true;
       Status s = penultimate_level_outputs_.CloseOutput(
-              curr_status, open_file_func, close_file_func);
+              curr_status, open_file_func, close_file_func,close_log_file_func);
       is_current_penultimate_level_ = false;
-      s = compaction_outputs_.CloseOutput(s, open_file_func, close_file_func);
+      s = compaction_outputs_.CloseOutput(s, open_file_func, close_file_func,close_log_file_func);
       return s;
     }
 

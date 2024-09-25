@@ -268,7 +268,8 @@ private:
 
     // update the thread status for starting a compaction.
     void ReportStartedCompaction(CompactionL0* compaction);
-
+    Status FinishCompactionOutputLogFile(SubcompactionL0State* sub_compact,
+                                                          CompactionL0Outputs& outputs);
     Status FinishCompactionOutputFile(const Status& input_status,
                                       SubcompactionL0State* sub_compact,
                                       CompactionL0Outputs& outputs,
@@ -277,6 +278,8 @@ private:
                                       const Slice* comp_end_user_key);
     Status InstallCompactionResults(const MutableCFOptions& mutable_cf_options,
                                     bool* compaction_released);
+    Status OpenCompactionOutputLogFile(SubcompactionL0State* sub_compact,
+                                    CompactionL0Outputs& outputs);
     Status OpenCompactionOutputFile(SubcompactionL0State* sub_compact,
                                     CompactionL0Outputs& outputs);
     void UpdateCompactionJobStats(
@@ -365,6 +368,7 @@ private:
 
     // Get table file name in where it's outputting to, which should also be in
     // `output_directory_`.
+    virtual std::string GetLogFileName(uint64_t file_number);
     virtual std::string GetTableFileName(uint64_t file_number);
     // The rate limiter priority (io_priority) is determined dynamically here.
     // The Compaction Read and Write priorities are the same for different

@@ -2783,6 +2783,13 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         get_impl_options.get_value ? get_impl_options.callback : nullptr,
         get_impl_options.get_value ? get_impl_options.is_blob_index : nullptr,
         get_impl_options.get_value);
+    if(s.ok()&&get_impl_options.get_value) {
+      std::string value;
+      Slice addr(*get_impl_options.value->buf_);
+      cfd->vlog_manager_.FetchValueFromVlog(addr,&value);
+      get_impl_options.value->buf_->assign(value);
+
+    }
     RecordTick(stats_, MEMTABLE_MISS);
   }
 

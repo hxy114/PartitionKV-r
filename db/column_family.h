@@ -16,11 +16,11 @@
 
 #include "cache/cache_reservation_manager.h"
 #include "db/memtable_list.h"
-#include "memtable/indexBtree.h"
 #include "db/table_cache.h"
 #include "db/table_properties_collector.h"
 #include "db/write_batch_internal.h"
 #include "db/write_controller.h"
+#include "memtable/indexBtree.h"
 #include "options/cf_options.h"
 #include "rocksdb/compaction_job_stats.h"
 #include "rocksdb/db.h"
@@ -30,6 +30,7 @@
 #include "util/cast_util.h"
 #include "util/hash_containers.h"
 #include "util/thread_local.h"
+#include "vlog_manager.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -682,6 +683,7 @@ class ColumnFamilyData {
   PmtableQueue high_queue_ ;
   PmtableQueue low_queue_ ;
   std::vector<std::pair<std::string,std::string>>L0_range_;
+  vlog::VlogManager vlog_manager_;
  private:
   uint64_t prev_compaction_needed_bytes_;
 

@@ -338,6 +338,9 @@ LIB_SOURCES =                                                   \
   memtable/partition_node.cc									\
   db/compaction/subcompactionl0_state.cc						\
   db/compaction/compactionl0_iterator.cc                        \
+  db/vlog_fetcher.cc                                            \
+  db/vlog_manager.cc										    \
+  db/vlog_writer.cc											    \
 
 
 ifeq (,$(shell $(CXX) -fsyntax-only -maltivec -xc /dev/null 2>&1))

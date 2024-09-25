@@ -91,7 +91,9 @@ Slice SubcompactionL0State::LargestUserKey() const {
 Status SubcompactionL0State::AddToOutput(
         const CompactionL0Iterator& iter,
         const CompactionL0FileOpenFunc& open_file_func,
-        const CompactionL0FileCloseFunc& close_file_func) {
+        const CompactionL0FileCloseFunc& close_file_func,
+        const CompactionL0LogFileOpenFunc &open_log_file_func,
+        const CompactionL0LogFileCloseFunc &close_log_file_func) {
   // update target output first
   is_current_penultimate_level_ = iter.output_to_penultimate_level();
   current_outputs_ = is_current_penultimate_level_ ? &penultimate_level_outputs_
@@ -100,7 +102,7 @@ Status SubcompactionL0State::AddToOutput(
     has_penultimate_level_outputs_ = true;
   }
 
-  return Current().AddToOutput(iter, open_file_func, close_file_func);
+  return Current().AddToOutput(iter, open_file_func, close_file_func,open_log_file_func,close_log_file_func);
 }
 
 }  // namespace ROCKSDB_NAMESPACE
