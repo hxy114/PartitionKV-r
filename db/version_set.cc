@@ -4321,7 +4321,9 @@ size_t VersionStorageInfo::GetOverlappingSize(int level, const InternalKey* begi
     // this level is empty, no overlapping inputs
     return 0;
   }
-  Slice user_begin, user_end;
+  return GetOverlappingSizeRangeBinarySearch(level, begin, end,-1, nullptr);
+
+  /*Slice user_begin, user_end;
   if (begin != nullptr) {
     user_begin = begin->user_key();
   }
@@ -4380,7 +4382,7 @@ size_t VersionStorageInfo::GetOverlappingSize(int level, const InternalKey* begi
     }
 
   }
-  return left-start+1;
+  return left-start+1;*/
 
 
 }
@@ -4656,6 +4658,107 @@ void VersionStorageInfo::GetOverlappingInputsRangeBinarySearch(
       *next_smallest = nullptr;
     }
   }
+}
+
+size_t VersionStorageInfo::GetOverlappingSizeRangeBinarySearch(
+    int level, const InternalKey* begin, const InternalKey* end,
+     int hint_index, int* file_index,
+    bool within_interval, InternalKey** next_smallest) const {
+  assert(level > 0);
+
+  auto user_cmp = user_comparator_;
+  const FdWithKeyRange* files = level_files_brief_[level].files;
+  const int num_files = static_cast<int>(level_files_brief_[level].num_files);
+
+  // begin to use binary search to find lower bound
+  // and upper bound.
+  int start_index = 0;
+  int end_index = num_files;
+
+  if (begin != nullptr) {
+    // if within_interval is true, with file_key would find
+    // not overlapping ranges in std::lower_bound.
+    auto cmp = [&user_cmp, &within_interval](const FdWithKeyRange& f,
+                                             const InternalKey* k) {
+      auto& file_key = within_interval ? f.file_metadata->smallest
+                                       : f.file_metadata->largest;
+      return sstableKeyCompare(user_cmp, file_key, *k) < 0;
+    };
+
+    start_index = static_cast<int>(
+        std::lower_bound(files,
+                         files + (hint_index == -1 ? num_files : hint_index),
+                         begin, cmp) -
+        files);
+
+    if (start_index > 0 && within_interval) {
+      bool is_overlapping = true;
+      while (is_overlapping && start_index < num_files) {
+        auto& pre_limit = files[start_index - 1].file_metadata->largest;
+        auto& cur_start = files[start_index].file_metadata->smallest;
+        is_overlapping = sstableKeyCompare(user_cmp, pre_limit, cur_start) == 0;
+        start_index += is_overlapping;
+      }
+    }
+  }
+
+  if (end != nullptr) {
+    // if within_interval is true, with file_key would find
+    // not overlapping ranges in std::upper_bound.
+    auto cmp = [&user_cmp, &within_interval](const InternalKey* k,
+                                             const FdWithKeyRange& f) {
+      auto& file_key = within_interval ? f.file_metadata->largest
+                                       : f.file_metadata->smallest;
+      return sstableKeyCompare(user_cmp, *k, file_key) < 0;
+    };
+
+    end_index = static_cast<int>(
+        std::upper_bound(files + start_index, files + num_files, end, cmp) -
+        files);
+
+    if (end_index < num_files && within_interval) {
+      bool is_overlapping = true;
+      while (is_overlapping && end_index > start_index) {
+        auto& next_start = files[end_index].file_metadata->smallest;
+        auto& cur_limit = files[end_index - 1].file_metadata->largest;
+        is_overlapping =
+            sstableKeyCompare(user_cmp, cur_limit, next_start) == 0;
+        end_index -= is_overlapping;
+      }
+    }
+  }
+
+  assert(start_index <= end_index);
+
+  // If there were no overlapping files, return immediately.
+  if (start_index == end_index) {
+    if (next_smallest) {
+      *next_smallest = nullptr;
+    }
+    return 0;
+  }
+
+  assert(start_index < end_index);
+
+  // returns the index where an overlap is found
+  if (file_index) {
+    *file_index = start_index;
+  }
+
+  // insert overlapping files into vector
+  /*for (int i = start_index; i < end_index; i++) {
+    inputs->push_back(files_[level][i]);
+  }*/
+
+  if (next_smallest != nullptr) {
+    // Provide the next key outside the range covered by inputs
+    if (end_index < static_cast<int>(files_[level].size())) {
+      **next_smallest = files_[level][end_index]->smallest;
+    } else {
+      *next_smallest = nullptr;
+    }
+  }
+  return end_index - start_index >= 0? end_index - start_index : 0;
 }
 
 uint64_t VersionStorageInfo::NumLevelBytes(int level) const {
