@@ -2122,7 +2122,7 @@ InternalIterator* DBImpl::NewInternalIteratorL0(
       &cfd->internal_comparator(), arena,
       !read_options.total_order_seek &&
           version->mutable_cf_options_.prefix_extractor != nullptr,
-      read_options.iterate_upper_bound);
+      read_options.iterate_upper_bound,cfd);
 
 
   std::vector<InternalIterator*> list;
