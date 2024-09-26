@@ -857,6 +857,100 @@ Status DBImpl::Recover(
   return s;
 }
 
+void DBImpl::RecoverNVM(ColumnFamilyData *cfd){
+  std::map<uint64_t ,PartitionNode*>partitionNodeMap;
+  std::map<uint64_t ,MemTable*>pmTableMap;
+  auto meta_nodes=nvmManager->get_recover_meta_nodes_();
+  auto pm_logs=nvmManager->get_recover_pm_log_nodes_();
+  for(auto & meta_node : meta_nodes){
+
+    PartitionNode * partition=new PartitionNode(meta_node.second,this->GetVersionSet(),
+                                                 mutex_,background_work_finished_signal_L0_,cfd->internal_comparator_,
+                                                 cfd->top_queue_,
+                                                 cfd->high_queue_,
+                                                 cfd->low_queue_,
+                                                 this, cfd);
+    partitionNodeMap[meta_node.first]=partition;
+    cfd->partitionIndexLayer_->add_new_partition(partition);
+  }
+  auto iter=cfd->partitionIndexLayer_->get_bmap()->begin();
+  auto last=iter->second->end_key;
+  iter++;
+  while(iter!=cfd->partitionIndexLayer_->get_bmap()->end()){
+    assert(last==iter->second->start_key);
+    last=iter->second->end_key;
+    iter++;
+  }
+
+  /*const InternalKeyComparator& comparator,
+      const ImmutableOptions& ioptions,
+      const MutableCFOptions& mutable_cf_options,
+      WriteBufferManager* write_buffer_manager,
+      SequenceNumber earliest_seq, uint32_t column_family_id, PmLogHead *pmLogHead*/
+
+  for(auto & pm_log : pm_logs){
+    MemTable *pmTable = cfd->ConstructNewMemtable(*cfd->GetLatestMutableCFOptions(),0,pm_log.second);
+    //MemTable *pmTable=new MemTable(cfd->internal_comparator_,cfd->cfd->write_buffer_manager_,pm_log.second);
+    pmTableMap[pm_log.first]=pmTable;
+  }
+  for(auto &pmtable:pmTableMap){
+    if(pmtable.second->pmLogHead_->next!=0){
+      assert(pmTableMap.count(pmtable.second->pmLogHead_->next)!=0);
+      auto next=pmTableMap[pmtable.second->pmLogHead_->next];
+      pmtable.second->next_=next;
+    }
+  }
+  for(auto partitionnode:partitionNodeMap){
+    if(partitionnode.second->metaNode->pm_log!=0){
+      assert(pmTableMap.count(partitionnode.second->metaNode->pm_log)!=0);
+      partitionnode.second->set_pmtable(pmTableMap[partitionnode.second->metaNode->pm_log]);
+      pmTableMap[partitionnode.second->metaNode->pm_log]->SetRole(MemTable::pmtable);
+      pmTableMap[partitionnode.second->metaNode->pm_log]->SetLeftFather(partitionnode.second);
+      pmTableMap[partitionnode.second->metaNode->pm_log]->SetPmTableStatus(MemTable::IN_RECEVIE);
+      assert(partitionnode.second->pmtable->next_== nullptr);
+
+
+    }
+    if(partitionnode.second->metaNode->immu_pm_log!=0){
+      assert(pmTableMap.count(partitionnode.second->metaNode->immu_pm_log)!=0);
+      partitionnode.second->add_immuPmtable_list(pmTableMap[partitionnode.second->metaNode->immu_pm_log]);
+      pmTableMap[partitionnode.second->metaNode->immu_pm_log]->SetRole(MemTable::immuPmtable);
+      pmTableMap[partitionnode.second->metaNode->immu_pm_log]->SetLeftFather(partitionnode.second);
+      if(partitionnode.second->immu_number_==1){
+        partitionnode.second->immuPmtable->status_=MemTable::IN_LOW_QUQUE;
+        cfd->low_queue_.InsertPmtable(partitionnode.second->immuPmtable);
+      }else{
+        partitionnode.second->immuPmtable->status_=MemTable::IN_HIGH_QUEUE;
+        cfd->high_queue_.InsertPmtable(partitionnode.second->immuPmtable);
+      }
+
+
+    }
+    if(partitionnode.second->metaNode->other_immu_pm_log!=0){
+      assert(pmTableMap.count(partitionnode.second->metaNode->other_immu_pm_log)!=0);
+      partitionnode.second->set_other_immupmtable(pmTableMap[partitionnode.second->metaNode->other_immu_pm_log]);
+      pmTableMap[partitionnode.second->metaNode->other_immu_pm_log]->SetRole(MemTable::other_immuPmtable);
+      if(pmTableMap[partitionnode.second->metaNode->other_immu_pm_log]->GetLeftFather()== nullptr){
+        pmTableMap[partitionnode.second->metaNode->other_immu_pm_log]->SetLeftFather(partitionnode.second);
+      }else{
+        pmTableMap[partitionnode.second->metaNode->other_immu_pm_log]->SetRightFather(partitionnode.second);
+      }
+      partitionnode.second->other_immuPmtable->status_=MemTable::IN_TOP_QUEUE;
+      cfd->top_queue_.InsertPmtable(partitionnode.second->other_immuPmtable);
+
+
+    }
+
+
+
+  }
+  for(auto &pmtable:pmTableMap){
+    assert(pmtable.second->refs_!=0);
+  }
+
+
+}
+
 Status DBImpl::PersistentStatsProcessFormatVersion() {
   mutex_.AssertHeld();
   Status s;
@@ -2069,6 +2163,8 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   } else {
     assert(impl->init_logger_creation_s_.ok());
   }
+  //std::cout<<impl->immutable_db_options_.GetWalDir()<<std::endl;
+  Status  is_exit = impl->env_->FileExists(impl->immutable_db_options_.GetWalDir()+"/CURRENT");
   s = impl->env_->CreateDirIfMissing(impl->immutable_db_options_.GetWalDir());
   if (s.ok()) {
     std::vector<std::string> paths;
@@ -2211,25 +2307,28 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       }
     }
   }
-
+ // const uint64_t start_micros = impl->env_->NowMicros();
   if(s.ok() && impl->use_partition_) {
-    auto cfd =
-        impl->versions_->GetColumnFamilySet()->GetColumnFamily(kDefaultColumnFamilyName);
-    /*VersionSet *const versions,
-        port::Mutex &mutex,
-        port::CondVar &background_work_finished_signal_L0_,
-        const InternalKeyComparator &internal_comparator,
-        PmtableQueue &top_queue,
-        PmtableQueue &high_queue,
-        PmtableQueue &low_queue,
-        DBImpl *dbImpl,
-        ColumnFamilyData *cfd*/
-    nvmManager=new NvmManager(false);
-    cfd->partitionIndexLayer_ = new PartitionIndexLayer(impl->versions_.get(), impl->mutex_, impl->background_work_finished_signal_L0_,
-                                                        cfd->internal_comparator_, cfd->top_queue_,cfd->high_queue_,cfd->low_queue_,impl,cfd);
-    cfd->partitionIndexLayer_->init();
-  }
+    if (!is_exit.ok()) {
+      //std::cout<<"no exit"<<std::endl;
+      auto cfd =
+          impl->versions_->GetColumnFamilySet()->GetColumnFamily(kDefaultColumnFamilyName);
+      nvmManager=new NvmManager(false);
+      cfd->partitionIndexLayer_ = new PartitionIndexLayer(impl->versions_.get(), impl->mutex_, impl->background_work_finished_signal_L0_,
+                                                          cfd->internal_comparator_, cfd->top_queue_,cfd->high_queue_,cfd->low_queue_,impl,cfd);
+      cfd->partitionIndexLayer_->init();
+    } else {
+      //std::cout << "exit" << std::endl;
+      auto cfd =
+          impl->versions_->GetColumnFamilySet()->GetColumnFamily(kDefaultColumnFamilyName);
+      nvmManager=new NvmManager(true);
+      cfd->partitionIndexLayer_ = new PartitionIndexLayer(impl->versions_.get(), impl->mutex_, impl->background_work_finished_signal_L0_,
+                                                          cfd->internal_comparator_, cfd->top_queue_,cfd->high_queue_,cfd->low_queue_,impl,cfd);
+      impl->RecoverNVM(cfd);
+    }
 
+  }
+  //std::cout << impl->env_->NowMicros() - start_micros<<"  "<<s.ToString();
   if (s.ok()) {
     SuperVersionContext sv_context(/* create_superversion */ true);
     for (auto cfd : *impl->versions_->GetColumnFamilySet()) {

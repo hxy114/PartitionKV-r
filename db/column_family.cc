@@ -1168,6 +1168,11 @@ MemTable* ColumnFamilyData::ConstructNewMemtable(
   return new MemTable(internal_comparator_, ioptions_, mutable_cf_options,
                       write_buffer_manager_, earliest_seq, id_,partitionNode,pmLogHead);
 }
+MemTable* ColumnFamilyData::ConstructNewMemtable(
+    const MutableCFOptions& mutable_cf_options, SequenceNumber earliest_seq,PmLogHead *pmLogHead) {
+  return new MemTable(internal_comparator_, ioptions_, mutable_cf_options,
+                      write_buffer_manager_, earliest_seq, id_,pmLogHead);
+}
 
 void ColumnFamilyData::CreateNewMemtable(
     const MutableCFOptions& mutable_cf_options, SequenceNumber earliest_seq) {

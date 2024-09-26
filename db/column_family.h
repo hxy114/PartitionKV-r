@@ -402,6 +402,8 @@ class ColumnFamilyData {
                                  SequenceNumber earliest_seq);
   MemTable* ConstructNewMemtable(const MutableCFOptions& mutable_cf_options,
                                  SequenceNumber earliest_seq, PartitionNode *partitionNode,PmLogHead *pmLogHead);
+  MemTable* ConstructNewMemtable(const MutableCFOptions& mutable_cf_options,
+                                 SequenceNumber earliest_seq,PmLogHead *pmLogHead);
   void CreateNewMemtable(const MutableCFOptions& mutable_cf_options,
                          SequenceNumber earliest_seq);
 

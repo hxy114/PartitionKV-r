@@ -112,6 +112,7 @@ class MemTable {
   friend class PartitionIndexLayer;
   friend class PartitionNode;
   friend class L0CompactionBuilder;
+  friend class DBImpl;
   struct KeyComparator : public MemTableRep::KeyComparator {
     const InternalKeyComparator comparator;
     explicit KeyComparator(const InternalKeyComparator& c) : comparator(c) {}
@@ -141,6 +142,11 @@ class MemTable {
                     const MutableCFOptions& mutable_cf_options,
                     WriteBufferManager* write_buffer_manager,
                     SequenceNumber earliest_seq, uint32_t column_family_id, PartitionNode *partitionNode, PmLogHead *pmLogHead);
+  explicit MemTable(const InternalKeyComparator& comparator,
+                    const ImmutableOptions& ioptions,
+                    const MutableCFOptions& mutable_cf_options,
+                    WriteBufferManager* write_buffer_manager,
+                    SequenceNumber earliest_seq, uint32_t column_family_id, PmLogHead *pmLogHead);
   // No copying allowed
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
@@ -278,6 +284,10 @@ class MemTable {
   // The next attempt should try a larger value for `seq`.
   Status Add(SequenceNumber seq, ValueType type, const Slice& key,
              const Slice& value, const ProtectionInfoKVOS64* kv_prot_info,
+             bool allow_concurrent = false,
+             MemTablePostProcessInfo* post_process_info = nullptr,
+             void** hint = nullptr);
+  Status Add(char *buf,const ProtectionInfoKVOS64* kv_prot_info,
              bool allow_concurrent = false,
              MemTablePostProcessInfo* post_process_info = nullptr,
              void** hint = nullptr);
