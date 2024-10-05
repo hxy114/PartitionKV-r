@@ -3663,6 +3663,7 @@ void DBImpl::BackgroundCallCompactionL0(PrepickedCompaction* prepicked_compactio
       bg_flush_scheduled_--;
     // See if there's more work to be done
     if(run) {
+      background_work_finished_signal_L0_.SignalAll();
       MaybeScheduleFlushOrCompaction();
     }
 

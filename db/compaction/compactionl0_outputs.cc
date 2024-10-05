@@ -425,7 +425,7 @@ Status CompactionL0Outputs::AddToOutput(
     return s;
   }
   const ParsedInternalKey& ikey = c_iter.ikey();
-  if(ikey.type==kTypeValue){
+  if(value.size()>400 && ikey.type==kTypeValue){
     std::string rep;
     rep.push_back(static_cast<char>(kTypeValue));
     PutLengthPrefixedSlice(&rep, ikey.user_key);

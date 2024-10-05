@@ -2031,7 +2031,7 @@ static void CleanupSuperVersionHandleL0(void* arg1, void* /*arg2*/) {
 
   state->mu->Lock();
   for(size_t i=0;i<state->table.size();i++){
-    state->table[i]->Unref();
+    delete state->table[i]->Unref();
   }
   state->version->Unref();
   state->mu->Unlock();
@@ -2785,7 +2785,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
         get_impl_options.get_value);
     if(s.ok()&&get_impl_options.get_value) {
       std::string value;
-      Slice addr(*get_impl_options.value->buf_);
+      Slice addr(*get_impl_options.value);
       cfd->vlog_manager_.FetchValueFromVlog(addr,&value);
       get_impl_options.value->buf_->assign(value);
 
@@ -2881,14 +2881,17 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     }
     mutex_.Lock();
     //ReturnAndCleanupSuperVersion(cfd, sv);
-    mem->Unref();
+    if(mem) {
+      delete mem->Unref();
+    }
+
 
     for(size_t i=0;i<other_list.size();i++){
-      other_list[i]->Unref();
+      delete other_list[i]->Unref();
     }
 
     for(size_t i=0;i<immu_list.size();i++){
-      immu_list[i]->Unref();
+      delete immu_list[i]->Unref();
     }
 
     current->Unref();
