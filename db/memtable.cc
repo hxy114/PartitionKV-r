@@ -1123,9 +1123,9 @@ Status MemTable::Add(SequenceNumber s, ValueType type,
     max_key_=key.ToString();
   }
   UpdateOldestKeyTime();
-  const char*  k=reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));;
-  ParsedInternalKey result;
-  ParseInternalKey({k + VarintLength(internal_key_size),internal_key_size},&result,false);
+  //const char*  k=reinterpret_cast<char*>(*reinterpret_cast<uint64_t *>(buf1));;
+  //ParsedInternalKey result;
+  //ParseInternalKey({k + VarintLength(internal_key_size),internal_key_size},&result,false);
   //std::cout<<"right"<<(k==key)<<std::endl;
   //std::cout<<"inserted key:"<<result.user_key.ToString()<<std::endl;
   //std::cout<<"inserted seq:"<<result.sequence<<std::endl;
