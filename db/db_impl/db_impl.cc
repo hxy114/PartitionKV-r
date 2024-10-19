@@ -2682,7 +2682,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
         RecordTick(stats_, MEMTABLE_HIT);
         // Done
-      } else if (!other_list.empty() && Get(immu_list,lkey,
+      } else if (!immu_list.empty() && Get(immu_list,lkey,
                                             get_impl_options.value ? get_impl_options.value->GetSelf()
                                                                    : nullptr,
                                             get_impl_options.columns, timestamp, &s, &merge_context,
@@ -2697,7 +2697,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
         RecordTick(stats_, MEMTABLE_HIT);
         // Done
-      } else if(!immu_list.empty()  &&Get(other_list,lkey,
+      } else if(!other_list.empty()  &&Get(other_list,lkey,
                                            get_impl_options.value ? get_impl_options.value->GetSelf()
                                                                   : nullptr,
                                            get_impl_options.columns, timestamp, &s, &merge_context,

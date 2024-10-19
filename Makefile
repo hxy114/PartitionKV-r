@@ -12,7 +12,7 @@ include common.mk
 
 CLEAN_FILES = # deliberately empty, so we can append below.
 CFLAGS += ${EXTRA_CFLAGS}
-CXXFLAGS += ${EXTRA_CXXFLAGS} -Wno-overloaded-virtual
+CXXFLAGS += ${EXTRA_CXXFLAGS} -Wno-overloaded-virtual  -Wno-maybe-uninitialized
 LDFLAGS += $(EXTRA_LDFLAGS)
 LDFLAGS += -lpmem
 MACHINE ?= $(shell uname -m)
