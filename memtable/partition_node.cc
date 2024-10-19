@@ -287,7 +287,7 @@ PartitionNode::MyStatus PartitionNode::Add(SequenceNumber s, ValueType type, con
   if(immu_number_>=3){
     ROCKS_LOG_INFO(dbImpl_->immutable_db_options().logger,"immu_number long :%zu,num_run_flush:%d",immu_number_, dbImpl_->num_running_flushes_);
     //Log(dbImpl_->options_.info_log,"immu_number long :%zu",immu_number_);
-    dbImpl_->env_->SleepForMicroseconds(1000);
+    dbImpl_->env_->SleepForMicroseconds(500);
   }
   Status ret=pmtable->Add(s,type,key,value,kv_prot_info,allow_concurrent,post_process_info,hint);
   if(ret.IsNvmNoSpace()){
