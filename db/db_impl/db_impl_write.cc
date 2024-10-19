@@ -529,7 +529,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     PERF_TIMER_STOP(write_pre_and_post_process_time);
 
     if (!two_write_queues_) {
-      if (status.ok() && !write_options.disableWAL) {
+      /*if (status.ok() && !write_options.disableWAL) {
         assert(log_context.log_file_number_size);
         LogFileNumberSize& log_file_number_size =
             *(log_context.log_file_number_size);
@@ -538,7 +538,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
             WriteToWAL(write_group, log_context.writer, log_used,
                        log_context.need_log_sync, log_context.need_log_dir_sync,
                        last_sequence + 1, log_file_number_size);
-      }
+      }*/
     } else {
       if (status.ok() && !write_options.disableWAL) {
         PERF_TIMER_GUARD(write_wal_time);
@@ -1422,6 +1422,7 @@ IOStatus DBImpl::WriteToWAL(const WriteThread::WriteGroup& write_group,
                             SequenceNumber sequence,
                             LogFileNumberSize& log_file_number_size) {
   IOStatus io_s;
+  return io_s;
   assert(!two_write_queues_);
   assert(!write_group.leader->disable_wal);
   // Same holds for all in the batch group
@@ -1537,7 +1538,7 @@ IOStatus DBImpl::ConcurrentWriteToWAL(
     const WriteThread::WriteGroup& write_group, uint64_t* log_used,
     SequenceNumber* last_sequence, size_t seq_inc) {
   IOStatus io_s;
-
+  return io_s;
   assert(two_write_queues_ || immutable_db_options_.unordered_write);
   assert(!write_group.leader->disable_wal);
   // Same holds for all in the batch group

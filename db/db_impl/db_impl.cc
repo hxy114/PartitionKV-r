@@ -2031,7 +2031,7 @@ static void CleanupSuperVersionHandleL0(void* arg1, void* /*arg2*/) {
 
   state->mu->Lock();
   for(size_t i=0;i<state->table.size();i++){
-    state->table[i]->Unref();
+    delete state->table[i]->Unref();
   }
   state->version->Unref();
   state->mu->Unlock();
@@ -2682,7 +2682,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
         RecordTick(stats_, MEMTABLE_HIT);
         // Done
-      } else if (!other_list.empty() && Get(immu_list,lkey,
+      } else if (!immu_list.empty() && Get(immu_list,lkey,
                                             get_impl_options.value ? get_impl_options.value->GetSelf()
                                                                    : nullptr,
                                             get_impl_options.columns, timestamp, &s, &merge_context,
@@ -2697,7 +2697,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 
         RecordTick(stats_, MEMTABLE_HIT);
         // Done
-      } else if(!immu_list.empty()  &&Get(other_list,lkey,
+      } else if(!other_list.empty()  &&Get(other_list,lkey,
                                            get_impl_options.value ? get_impl_options.value->GetSelf()
                                                                   : nullptr,
                                            get_impl_options.columns, timestamp, &s, &merge_context,
@@ -2874,14 +2874,17 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     }
     mutex_.Lock();
     //ReturnAndCleanupSuperVersion(cfd, sv);
-    mem->Unref();
+    if(mem) {
+     delete mem->Unref();
+    }
+
 
     for(size_t i=0;i<other_list.size();i++){
-      other_list[i]->Unref();
+     delete other_list[i]->Unref();
     }
 
     for(size_t i=0;i<immu_list.size();i++){
-      immu_list[i]->Unref();
+     delete immu_list[i]->Unref();
     }
 
     current->Unref();
