@@ -19,7 +19,7 @@ NvmArena::NvmArena(PmLogHead *pm_log_start,AllocTracker* tracker,bool force,bool
 NvmArena::NvmArena() {}
 NvmArena::~NvmArena() {
   //TODO maybe归还pmlog
-  Persist();
+ // Persist();
   if (tracker_ != nullptr) {
     assert(tracker_->is_freed());
     tracker_->FreeMem();
@@ -27,9 +27,9 @@ NvmArena::~NvmArena() {
 }
 
 char* NvmArena::Allocate(size_t bytes) {
-  if(kv_alloc_ptr_-last_persist_point_>static_cast<long long int>(PERSIST_SIZE)){
-    Persist();
-  }
+ // if(kv_alloc_ptr_-last_persist_point_>static_cast<long long int>(PERSIST_SIZE)){
+  //  Persist();
+//  }
 
   char *result=kv_alloc_ptr_;
   kv_alloc_ptr_+=bytes;

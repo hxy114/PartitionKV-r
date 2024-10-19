@@ -100,9 +100,15 @@ void PartitionIndexLayer::Add(SequenceNumber s, ValueType type, const Slice& key
   }*/
   if(nvmManager->get_free_pm_log_number()<=nvmManager->L0_wait_){
     //Log(dbImpl_->options_.info_log,"L0 wait,free_pm_log");
-    std::cout<<"capacity:"<<capacity_<<" nvmManager->get_free_pm_log_number():"<<nvmManager->get_free_pm_log_number()<<"nvmManager->L0_wait_"<<nvmManager->L0_wait_<<std::endl;
+    //std::cout<<"capacity:"<<capacity_<<" nvmManager->get_free_pm_log_number():"<<nvmManager->get_free_pm_log_number()<<"nvmManager->L0_wait_"<<nvmManager->L0_wait_<<std::endl;
     ROCKS_LOG_INFO(dbImpl_->immutable_db_options().logger,"L0 wait,free_pm_log");
-    dbImpl_->env_->SleepForMicroseconds(1000);
+    static bool x =false;
+    if(x){
+	x=false;
+    dbImpl_->env_->SleepForMicroseconds(500);
+    }else{
+	  x=true;
+    }
   }
 
 
